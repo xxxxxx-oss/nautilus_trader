@@ -21,7 +21,9 @@ use ibapi::{
     },
     subscriptions::Subscription,
 };
-use nautilus_common::{cache::Cache, live::runner::replace_exec_event_sender};
+use nautilus_common::{
+    cache::Cache, live::runner::replace_exec_event_sender, messages::SourcedExecutionReport,
+};
 use nautilus_live::{ExecutionClientCore, execution::failure::CommandFailure};
 use nautilus_model::{
     enums::{AccountType, AssetClass, LiquiditySide, OmsType, OrderSide, OrderType},
@@ -1275,6 +1277,7 @@ async fn handle_order_update_ignores_deactivated_open_order(
         &instrument_provider,
         &exec_sender,
         nautilus_core::time::get_atomic_clock_realtime(),
+        *IB_CLIENT_ID,
         AccountId::from("IB-001"),
         &commission_cache,
         &instrument_id_map,
@@ -1676,6 +1679,7 @@ async fn test_handle_spread_execution_first_fill() {
         &instrument_provider,
         &exec_sender,
         ts_init,
+        *IB_CLIENT_ID,
         account_id,
         &spread_fill_tracking,
         &context,
@@ -1700,7 +1704,11 @@ async fn test_handle_spread_execution_first_fill() {
 
     let leg_event = exec_receiver.try_recv().unwrap();
     match leg_event {
-        ExecutionEvent::Report(ExecutionReport::Fill(fill)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            client_id,
+            report: ExecutionReport::Fill(fill),
+        }) => {
+            assert_eq!(client_id, *IB_CLIENT_ID);
             assert_eq!(fill.instrument_id, instrument_id);
             assert_eq!(fill.last_qty, Quantity::from(3));
             assert_eq!(fill.last_px, Price::from("5.25"));
@@ -1752,6 +1760,7 @@ async fn test_handle_spread_execution_duplicate_detection() {
         &instrument_provider,
         &exec_sender,
         ts_init,
+        *IB_CLIENT_ID,
         account_id,
         &spread_fill_tracking,
         &context,
@@ -2238,6 +2247,7 @@ async fn test_process_order_update_stream_emits_accepted_then_canceled() {
         &instrument_provider,
         &exec_sender,
         nautilus_core::time::get_atomic_clock_realtime(),
+        *IB_CLIENT_ID,
         AccountId::from("IB-001"),
         &commission_cache,
         &pending_execution_cache,
@@ -2336,6 +2346,7 @@ async fn test_process_order_update_stream_clears_market_order_update_prices() {
         &instrument_provider,
         &exec_sender,
         nautilus_core::time::get_atomic_clock_realtime(),
+        *IB_CLIENT_ID,
         AccountId::from("IB-001"),
         &commission_cache,
         &pending_execution_cache,
@@ -2457,6 +2468,7 @@ async fn test_process_order_update_stream_emits_fill_after_commission_report(
         &instrument_provider,
         &exec_sender,
         nautilus_core::time::get_atomic_clock_realtime(),
+        *IB_CLIENT_ID,
         AccountId::from("IB-001"),
         &commission_cache,
         &pending_execution_cache,
@@ -2583,6 +2595,7 @@ async fn test_process_order_update_stream_retains_terminal_identity_for_late_fil
         &instrument_provider,
         &exec_sender,
         nautilus_core::time::get_atomic_clock_realtime(),
+        *IB_CLIENT_ID,
         AccountId::from("IB-001"),
         &commission_cache,
         &pending_execution_cache,
@@ -2634,6 +2647,7 @@ async fn test_process_order_update_stream_retains_terminal_identity_for_late_fil
         &instrument_provider,
         &exec_sender,
         nautilus_core::time::get_atomic_clock_realtime(),
+        *IB_CLIENT_ID,
         AccountId::from("IB-001"),
         &commission_cache,
         &pending_execution_cache,
@@ -2757,6 +2771,7 @@ async fn test_process_order_update_stream_retains_terminal_combo_routing() {
         &instrument_provider,
         &exec_sender,
         nautilus_core::time::get_atomic_clock_realtime(),
+        *IB_CLIENT_ID,
         AccountId::from("IB-001"),
         &commission_cache,
         &pending_execution_cache,
@@ -2788,8 +2803,11 @@ async fn test_process_order_update_stream_retains_terminal_combo_routing() {
     ));
     assert!(matches!(
         exec_receiver.try_recv().unwrap(),
-        ExecutionEvent::Report(ExecutionReport::Fill(event))
-            if event.instrument_id == leg_instrument_id
+        ExecutionEvent::Report(SourcedExecutionReport {
+            client_id,
+            report: ExecutionReport::Fill(event),
+        })
+            if client_id == *IB_CLIENT_ID && event.instrument_id == leg_instrument_id
     ));
     assert!(exec_receiver.try_recv().is_err());
     assert!(active_order_contexts.lock().unwrap().is_empty());
@@ -2860,6 +2878,7 @@ async fn test_process_order_update_stream_learns_order_ref_from_execution() {
         &instrument_provider,
         &exec_sender,
         nautilus_core::time::get_atomic_clock_realtime(),
+        *IB_CLIENT_ID,
         AccountId::from("IB-001"),
         &commission_cache,
         &pending_execution_cache,
@@ -2879,7 +2898,11 @@ async fn test_process_order_update_stream_learns_order_ref_from_execution() {
 
     let fill_event = exec_receiver.try_recv().unwrap();
     match fill_event {
-        ExecutionEvent::Report(ExecutionReport::Fill(fill)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            client_id,
+            report: ExecutionReport::Fill(fill),
+        }) => {
+            assert_eq!(client_id, *IB_CLIENT_ID);
             assert_eq!(fill.client_order_id, Some(client_order_id));
             assert_eq!(fill.instrument_id, instrument_id);
         }

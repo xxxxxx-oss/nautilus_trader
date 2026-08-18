@@ -31,7 +31,7 @@
 
 use nautilus_common::{
     factories::OrderEventFactory,
-    messages::{ExecutionEvent, ExecutionReport},
+    messages::{ExecutionEvent, ExecutionReport, SourcedExecutionReport},
 };
 use nautilus_core::{Params, UUID4, UnixNanos, time::AtomicTime};
 use nautilus_model::{
@@ -41,8 +41,8 @@ use nautilus_model::{
         OrderModifyRejected, OrderRejected, OrderSubmittedBatch,
     },
     identifiers::{
-        AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId, TraderId,
-        VenueOrderId,
+        AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId,
+        TraderId, VenueOrderId,
     },
     orders::OrderAny,
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
@@ -59,6 +59,7 @@ use nautilus_model::{
 #[derive(Debug, Clone)]
 pub struct ExecutionEventEmitter {
     clock: &'static AtomicTime,
+    client_id: ClientId,
     factory: OrderEventFactory,
     sender: Option<tokio::sync::mpsc::UnboundedSender<ExecutionEvent>>,
 }
@@ -71,12 +72,14 @@ impl ExecutionEventEmitter {
     pub fn new(
         clock: &'static AtomicTime,
         trader_id: TraderId,
+        client_id: ClientId,
         account_id: AccountId,
         account_type: AccountType,
         base_currency: Option<Currency>,
     ) -> Self {
         Self {
             clock,
+            client_id,
             factory: OrderEventFactory::new(trader_id, account_id, account_type, base_currency),
             sender: None,
         }
@@ -101,6 +104,12 @@ impl ExecutionEventEmitter {
     #[must_use]
     pub fn trader_id(&self) -> TraderId {
         self.factory.trader_id()
+    }
+
+    /// Returns the execution client ID bound to emitted reports.
+    #[must_use]
+    pub const fn client_id(&self) -> ClientId {
+        self.client_id
     }
 
     /// Returns the account ID.
@@ -470,7 +479,8 @@ impl ExecutionEventEmitter {
     /// Emits an execution report.
     pub fn send_execution_report(&self, report: ExecutionReport) {
         if let Some(sender) = &self.sender {
-            if let Err(e) = sender.send(ExecutionEvent::Report(report)) {
+            let sourced = SourcedExecutionReport::new(self.client_id, report);
+            if let Err(e) = sender.send(ExecutionEvent::Report(sourced)) {
                 log::warn!("Failed to send execution report: {e}");
             }
         } else {

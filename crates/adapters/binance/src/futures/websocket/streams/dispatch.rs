@@ -1546,11 +1546,11 @@ fn emit_venue_order_id_update(
 
 #[cfg(test)]
 mod tests {
-    use nautilus_common::messages::{ExecutionEvent, ExecutionReport};
+    use nautilus_common::messages::{ExecutionEvent, ExecutionReport, SourcedExecutionReport};
     use nautilus_core::time::get_atomic_clock_realtime;
     use nautilus_model::{
         enums::{AccountType, OrderSide, OrderStatus, OrderType},
-        identifiers::{StrategyId, TraderId},
+        identifiers::{ClientId, StrategyId, TraderId},
     };
     use rstest::rstest;
     use serde::de::DeserializeOwned;
@@ -1638,7 +1638,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             events[0],
-            ExecutionEvent::Report(ExecutionReport::OrderWithFills(_, ref fills)) if fills.len() == 1
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::OrderWithFills(_, ref fills),
+                ..
+            }) if fills.len() == 1
         ));
     }
 
@@ -1653,7 +1656,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             events[0],
-            ExecutionEvent::Report(ExecutionReport::Order(_))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Order(_),
+                ..
+            })
         ));
     }
 
@@ -1668,7 +1674,10 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             events[0],
-            ExecutionEvent::Report(ExecutionReport::Fill(_))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(_),
+                ..
+            })
         ));
     }
 
@@ -1811,7 +1820,10 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(
                     event,
-                    ExecutionEvent::Report(ExecutionReport::OrderWithFills(status, fills))
+                    ExecutionEvent::Report(SourcedExecutionReport {
+                        report: ExecutionReport::OrderWithFills(status, fills),
+                        ..
+                    })
                         if status.client_order_id == Some(ClientOrderId::from("TEST"))
                             && fills.len() == 1
                             && fills[0].trade_id == TradeId::new("12345678")
@@ -2133,7 +2145,10 @@ mod tests {
                 .iter()
                 .filter(|event| matches!(
                     event,
-                    ExecutionEvent::Report(ExecutionReport::OrderWithFills(status, fills))
+                    ExecutionEvent::Report(SourcedExecutionReport {
+                        report: ExecutionReport::OrderWithFills(status, fills),
+                        ..
+                    })
                         if status.order_status == OrderStatus::Filled
                             && fills.len() == 1
                             && fills[0].trade_id == TradeId::new("12345999")
@@ -2176,6 +2191,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             clock,
             TraderId::from("TESTER-001"),
+            ClientId::from("BINANCE"),
             AccountId::from("BINANCE-001"),
             AccountType::Margin,
             None,
@@ -3432,7 +3448,10 @@ mod tests {
             .filter(|event| {
                 matches!(
                     event,
-                    ExecutionEvent::Report(ExecutionReport::OrderWithFills(_, fills))
+                    ExecutionEvent::Report(SourcedExecutionReport {
+                        report: ExecutionReport::OrderWithFills(_, fills),
+                        ..
+                    })
                         if fills.len() == 1
                 )
             })

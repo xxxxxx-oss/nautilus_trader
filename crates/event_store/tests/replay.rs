@@ -281,6 +281,60 @@ fn forensics_replay_loads_entries_from_sealed_redb_run() {
     assert!(loaded.catalog_slices.is_empty());
 }
 
+#[rstest]
+fn forensics_replay_preserves_legacy_and_sourced_report_payloads() {
+    let tmp = TempDir::new().expect("tempdir");
+    let run_id = "run-forensics-report-compatibility";
+    let mut backend = RedbBackend::new(tmp.path());
+    backend.open_run(manifest(run_id)).expect("open run");
+
+    let writer = EventStoreWriter::spawn(
+        Box::new(backend),
+        get_atomic_clock_static(),
+        noop_halt(),
+        WriterConfig::default(),
+    )
+    .expect("spawn");
+    let legacy_payload = Bytes::from_static(b"legacy-unsourced-report");
+    let sourced_payload = Bytes::from_static(b"named-source-bearing-report");
+    writer
+        .submit(EntryDraft {
+            headers: Headers::empty(),
+            topic: Topic::from("reconciliation.raw.OrderStatusReport"),
+            payload_type: Ustr::from("OrderStatusReport"),
+            payload: legacy_payload.clone(),
+            ts_init: UnixNanos::from(100),
+            index_keys: Vec::new(),
+        })
+        .expect("submit legacy report");
+    writer
+        .submit(EntryDraft {
+            headers: Headers::empty(),
+            topic: Topic::from("reconciliation.raw.OrderStatusReport"),
+            payload_type: Ustr::from("SourcedOrderStatusReport"),
+            payload: sourced_payload.clone(),
+            ts_init: UnixNanos::from(101),
+            index_keys: Vec::new(),
+        })
+        .expect("submit sourced report");
+    let final_hwm = writer.close(run_ended_draft()).expect("close");
+
+    let (_, reader) = open_event_store_replay_source(tmp.path().to_path_buf(), INSTANCE_ID, run_id)
+        .expect("open replay source");
+    let plan = plan_forensics_replay_inputs(&reader, ReplaySeqRange::new(1, final_hwm))
+        .expect("plan replay");
+    let loaded = load_forensics_replay_inputs(&reader, &plan).expect("load replay");
+
+    assert_eq!(final_hwm, 3);
+    assert_eq!(loaded.entries[0].payload_type.as_str(), "OrderStatusReport");
+    assert_eq!(loaded.entries[0].payload, legacy_payload);
+    assert_eq!(
+        loaded.entries[1].payload_type.as_str(),
+        "SourcedOrderStatusReport",
+    );
+    assert_eq!(loaded.entries[1].payload, sourced_payload);
+}
+
 #[cfg(feature = "persistence")]
 #[rstest]
 fn marker_cursor_join_loads_catalog_records_from_durable_sidecar() {

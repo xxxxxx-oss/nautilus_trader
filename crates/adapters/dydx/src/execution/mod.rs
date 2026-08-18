@@ -214,8 +214,14 @@ impl DydxExecutionClient {
         let trader_id = core.trader_id;
         let account_id = core.account_id;
         let clock = get_atomic_clock_realtime();
-        let emitter =
-            ExecutionEventEmitter::new(clock, trader_id, account_id, AccountType::Margin, None);
+        let emitter = ExecutionEventEmitter::new(
+            clock,
+            trader_id,
+            core.client_id,
+            account_id,
+            AccountType::Margin,
+            None,
+        );
 
         let retry_config = RetryConfig {
             max_retries: config.max_retries,
@@ -3640,6 +3646,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             clock,
             TraderId::from("TRADER-001"),
+            ClientId::from("DYDX"),
             AccountId::from("DYDX-001"),
             AccountType::Margin,
             None,

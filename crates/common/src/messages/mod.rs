@@ -37,7 +37,7 @@ pub mod defi;
 
 // Re-exports
 pub use data::{DataResponse, SubscribeCommand, UnsubscribeCommand};
-pub use execution::ExecutionReport;
+pub use execution::{ExecutionReport, SourcedExecutionReport};
 
 // TODO: Refine this to reduce disparity between enum sizes
 #[allow(
@@ -78,6 +78,6 @@ pub enum ExecutionEvent {
     OrderSubmittedBatch(OrderSubmittedBatch),
     OrderAcceptedBatch(OrderAcceptedBatch),
     OrderCanceledBatch(OrderCanceledBatch),
-    Report(ExecutionReport),
+    Report(SourcedExecutionReport),
     Account(AccountState),
 }

@@ -47,7 +47,7 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::runner::set_exec_event_sender,
     messages::{
-        ExecutionEvent, ExecutionReport,
+        ExecutionEvent, ExecutionReport, SourcedExecutionReport,
         execution::{
             BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
             GenerateOrderStatusReport, GenerateOrderStatusReports, ModifyOrder, QueryAccount,
@@ -4178,7 +4178,10 @@ async fn drain_order_status_reports(
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Some(ExecutionEvent::Report(ExecutionReport::Order(report)))) => out.push(*report),
+            Ok(Some(ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Order(report),
+                ..
+            }))) => out.push(*report),
             Ok(Some(_)) => {}
             Ok(None) | Err(_) => break,
         }

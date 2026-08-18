@@ -301,6 +301,7 @@ impl BinanceFuturesExecutionClient {
         let emitter = ExecutionEventEmitter::new(
             clock,
             core.trader_id,
+            core.client_id,
             core.account_id,
             core.account_type,
             core.base_currency,

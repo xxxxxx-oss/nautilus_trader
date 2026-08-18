@@ -64,6 +64,8 @@ static SYSTEM_SHUTDOWN_TOPIC: OnceLock<MStr<Topic>> = OnceLock::new();
 static RECONCILIATION_RAW_ORDER_REPORT_TOPIC: OnceLock<MStr<Topic>> = OnceLock::new();
 static RECONCILIATION_RAW_FILL_REPORT_TOPIC: OnceLock<MStr<Topic>> = OnceLock::new();
 static RECONCILIATION_RAW_POSITION_REPORT_TOPIC: OnceLock<MStr<Topic>> = OnceLock::new();
+static RECONCILIATION_RAW_ORDER_WITH_FILLS_TOPIC: OnceLock<MStr<Topic>> = OnceLock::new();
+static RECONCILIATION_RAW_MASS_STATUS_TOPIC: OnceLock<MStr<Topic>> = OnceLock::new();
 
 #[cfg(feature = "defi")]
 static DATA_PROCESS_DEFI_DATA_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
@@ -258,14 +260,14 @@ macro_rules! define_switchboard {
                 *SYSTEM_SHUTDOWN_TOPIC.get_or_init(|| "commands.system.shutdown".into())
             }
 
-            /// Pub/sub topic carrying raw `OrderStatusReport`s that arrived from
-            /// a venue client, published by the execution engine at the top of
-            /// reconciliation before any state mutation.
+            /// Pub/sub topic carrying a `SourcedExecutionReport` whose report
+            /// variant is `OrderStatusReport`, published by the execution engine
+            /// at the top of reconciliation before any state mutation.
             ///
             /// The event store bus tap captures publications on this topic so
-            /// forensic replay can re-run reconciliation against the same raw
-            /// inputs the live engine saw. Subscribers are not expected in
-            /// production; the capture surface is the sole consumer today.
+            /// forensic inspection retains the exact source-bearing input the
+            /// live engine saw. Subscribers are not expected in production; the
+            /// capture surface is the sole consumer today.
             #[inline]
             #[must_use]
             pub fn reconciliation_raw_order_status_report_topic() -> MStr<Topic> {
@@ -273,9 +275,9 @@ macro_rules! define_switchboard {
                     .get_or_init(|| "reconciliation.raw.OrderStatusReport".into())
             }
 
-            /// Pub/sub topic carrying raw `FillReport`s that arrived from a
-            /// venue client, published by the execution engine at the top of
-            /// reconciliation before any state mutation.
+            /// Pub/sub topic carrying a `SourcedExecutionReport` whose report
+            /// variant is `FillReport`, published by the execution engine at the
+            /// top of reconciliation before any state mutation.
             ///
             /// See [`Self::reconciliation_raw_order_status_report_topic`] for the
             /// capture contract.
@@ -286,9 +288,9 @@ macro_rules! define_switchboard {
                     .get_or_init(|| "reconciliation.raw.FillReport".into())
             }
 
-            /// Pub/sub topic carrying raw `PositionStatusReport`s that arrived
-            /// from a venue client, published by the execution engine at the
-            /// top of reconciliation before any state mutation.
+            /// Pub/sub topic carrying a `SourcedExecutionReport` whose report
+            /// variant is `PositionStatusReport`, published by the execution
+            /// engine at the top of reconciliation before any state mutation.
             ///
             /// See [`Self::reconciliation_raw_order_status_report_topic`] for the
             /// capture contract.
@@ -297,6 +299,22 @@ macro_rules! define_switchboard {
             pub fn reconciliation_raw_position_status_report_topic() -> MStr<Topic> {
                 *RECONCILIATION_RAW_POSITION_REPORT_TOPIC
                     .get_or_init(|| "reconciliation.raw.PositionStatusReport".into())
+            }
+
+            /// Pub/sub topic carrying a sourced order report and its companion fills.
+            #[inline]
+            #[must_use]
+            pub fn reconciliation_raw_order_with_fills_topic() -> MStr<Topic> {
+                *RECONCILIATION_RAW_ORDER_WITH_FILLS_TOPIC
+                    .get_or_init(|| "reconciliation.raw.OrderWithFills".into())
+            }
+
+            /// Pub/sub topic carrying a sourced execution mass status report.
+            #[inline]
+            #[must_use]
+            pub fn reconciliation_raw_execution_mass_status_topic() -> MStr<Topic> {
+                *RECONCILIATION_RAW_MASS_STATUS_TOPIC
+                    .get_or_init(|| "reconciliation.raw.ExecutionMassStatus".into())
             }
 
             /// Returns a wildcard pattern for matching all instrument topics for a venue.
@@ -797,6 +815,20 @@ mod tests {
     fn test_reconciliation_raw_position_status_report_topic() {
         let expected_topic = "reconciliation.raw.PositionStatusReport".into();
         let result = MessagingSwitchboard::reconciliation_raw_position_status_report_topic();
+        assert_eq!(result, expected_topic);
+    }
+
+    #[rstest]
+    fn test_reconciliation_raw_order_with_fills_topic() {
+        let expected_topic = "reconciliation.raw.OrderWithFills".into();
+        let result = MessagingSwitchboard::reconciliation_raw_order_with_fills_topic();
+        assert_eq!(result, expected_topic);
+    }
+
+    #[rstest]
+    fn test_reconciliation_raw_execution_mass_status_topic() {
+        let expected_topic = "reconciliation.raw.ExecutionMassStatus".into();
+        let result = MessagingSwitchboard::reconciliation_raw_execution_mass_status_topic();
         assert_eq!(result, expected_topic);
     }
 

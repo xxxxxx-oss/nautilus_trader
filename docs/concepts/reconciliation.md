@@ -38,14 +38,12 @@ for its execution.
   validation and before transport.
 - When non‑synthetic external orders are materialized during startup reconciliation, from the
   reporting mass‑status client.
-- When external orders are materialized from runtime venue reports and the report's account
-  matches exactly one registered client that handles the instrument venue.
+- When non-synthetic external orders are materialized from runtime reports, from the mandatory
+  source execution client carried by the report envelope.
 
 **An origin may be absent for:**
 
 - Cache data written before resolved origins were persisted.
-- External orders whose runtime report does not identify exactly one registered client by account
-  and instrument venue.
 - Synthetic reconciliation orders.
 
 The built‑in cache backends enqueue a resolved origin for persistence before transport. Their

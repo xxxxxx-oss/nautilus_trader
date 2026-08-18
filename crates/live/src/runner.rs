@@ -67,8 +67,8 @@ use nautilus_common::{
         replace_system_event_sender,
     },
     messages::{
-        DataEvent, ExecutionEvent, ExecutionReport, SystemCommand, SystemEvent, data::DataCommand,
-        execution::TradingCommand,
+        DataEvent, ExecutionEvent, SourcedExecutionReport, SystemCommand, SystemEvent,
+        data::DataCommand, execution::TradingCommand,
     },
     msgbus::{self, MessagingSwitchboard},
     runner::{
@@ -510,7 +510,7 @@ impl AsyncRunner {
     }
 
     #[inline]
-    pub fn handle_exec_report(report: ExecutionReport) {
+    pub fn handle_exec_report(report: SourcedExecutionReport) {
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         msgbus::send_execution_report(endpoint, report);
     }
@@ -633,6 +633,7 @@ mod tests {
 
     use nautilus_common::{
         cache::Cache,
+        clients::ExecutionClient,
         clock::TestClock,
         live::runner::{
             get_data_event_sender, get_exec_event_sender, get_system_command_sender,
@@ -652,12 +653,12 @@ mod tests {
         timer::{TimeEvent, TimeEventCallback},
     };
     use nautilus_core::{UUID4, UnixNanos};
-    use nautilus_execution::engine::ExecutionEngine;
+    use nautilus_execution::engine::{ExecutionEngine, stubs::StubExecutionClient};
     use nautilus_model::{
         data::{Data, DataType, quote::QuoteTick},
         enums::{
-            AccountType, LiquiditySide, OrderSide, OrderStatus, OrderType, PositionSideSpecified,
-            TimeInForce,
+            AccountType, LiquiditySide, OmsType, OrderSide, OrderStatus, OrderType,
+            PositionSideSpecified, TimeInForce,
         },
         events::{
             OrderAcceptedBatch, OrderCanceledBatch, OrderEvent, OrderEventAny, OrderSubmittedBatch,
@@ -668,6 +669,7 @@ mod tests {
             AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId,
             TraderId, Venue, VenueOrderId,
         },
+        instruments::{Instrument, stubs::audusd_sim},
         reports::{FillReport, OrderStatusReport, PositionStatusReport},
         types::{Money, Price, Quantity},
     };
@@ -1458,6 +1460,109 @@ mod tests {
         }
     }
 
+    #[rstest]
+    fn test_runtime_order_status_report_preserves_routing_client_source() {
+        std::thread::spawn(|| {
+            msgbus::get_message_bus().borrow_mut().dispose();
+
+            let clock = Rc::new(RefCell::new(TestClock::new()));
+            let cache = Rc::new(RefCell::new(Cache::default()));
+            let exec_engine = Rc::new(RefCell::new(ExecutionEngine::new(clock, cache, None)));
+            let instrument = audusd_sim();
+            let venue_client_id = ClientId::from("VENUE-A");
+            let routing_client_id = ClientId::from("ROUTING-B");
+
+            let venue_client = StubExecutionClient::new(
+                venue_client_id,
+                AccountId::from("VENUE-A-ACCOUNT"),
+                instrument.id().venue,
+                OmsType::Netting,
+                None,
+            );
+            let routing_client = StubExecutionClient::new(
+                routing_client_id,
+                AccountId::from("ROUTING-B-ACCOUNT"),
+                Venue::from("ROUTING-B"),
+                OmsType::Netting,
+                None,
+            )
+            .with_handles_all_order_venues();
+
+            assert!(venue_client.handles_order_venue(instrument.id().venue));
+            assert!(routing_client.handles_order_venue(instrument.id().venue));
+
+            {
+                let mut engine = exec_engine.borrow_mut();
+                engine.register_client(Box::new(venue_client)).unwrap();
+                engine.register_client(Box::new(routing_client)).unwrap();
+                engine
+                    .cache()
+                    .borrow_mut()
+                    .add_instrument(instrument.clone().into())
+                    .unwrap();
+            }
+            ExecutionEngine::register_msgbus_handlers(&exec_engine);
+
+            let runner = AsyncRunner::new();
+            runner.bind_senders();
+            let client_order_id = ClientOrderId::from("O-RUNTIME-B-001");
+            let report = OrderStatusReport::new(
+                AccountId::from("ROUTING-B-ACCOUNT"),
+                instrument.id(),
+                Some(client_order_id),
+                VenueOrderId::from("V-RUNTIME-B-001"),
+                OrderSide::Buy,
+                OrderType::Market,
+                TimeInForce::Gtc,
+                OrderStatus::Accepted,
+                Quantity::from(100_000),
+                Quantity::from(0),
+                UnixNanos::from(1),
+                UnixNanos::from(2),
+                UnixNanos::from(3),
+                None,
+            );
+
+            get_exec_event_sender()
+                .send(ExecutionEvent::Report(SourcedExecutionReport::new(
+                    routing_client_id,
+                    ExecutionReport::Order(Box::new(report)),
+                )))
+                .unwrap();
+
+            let mut channels = runner.take_channels();
+            let event = channels
+                .exec_evt_rx
+                .try_recv()
+                .expect("routing client report should reach the runtime channel");
+            AsyncRunner::handle_exec_event(event);
+
+            let cache = exec_engine.borrow().cache().clone();
+            let (origin, order) = {
+                let cache = cache.borrow();
+                let order = cache
+                    .order(&client_order_id)
+                    .expect("runtime report should materialize an external order")
+                    .clone();
+                (cache.client_id(&client_order_id).copied(), order)
+            };
+            let routed_client_id = {
+                let engine = exec_engine.borrow();
+                let clients = engine.get_clients_for_orders(&[order]);
+                assert_eq!(clients.len(), 1);
+                clients[0].client_id()
+            };
+
+            assert_eq!(
+                (origin, routed_client_id),
+                (Some(routing_client_id), routing_client_id),
+                "runtime reports must retain the emitting execution client",
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn test_execution_report_order_status_channel() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ExecutionEvent>();
@@ -1479,14 +1584,18 @@ mod tests {
             None,
         );
 
-        tx.send(ExecutionEvent::Report(ExecutionReport::Order(Box::new(
-            report,
-        ))))
+        tx.send(ExecutionEvent::Report(SourcedExecutionReport::new(
+            ClientId::from("SIM"),
+            ExecutionReport::Order(Box::new(report)),
+        )))
         .unwrap();
 
         let received = rx.recv().await.unwrap();
         match received {
-            ExecutionEvent::Report(ExecutionReport::Order(r)) => {
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Order(r),
+                ..
+            }) => {
                 assert_eq!(r.venue_order_id.as_str(), "V-001");
                 assert_eq!(r.order_status, OrderStatus::Accepted);
             }
@@ -1515,14 +1624,18 @@ mod tests {
             None,
         );
 
-        tx.send(ExecutionEvent::Report(ExecutionReport::Fill(Box::new(
-            report,
-        ))))
+        tx.send(ExecutionEvent::Report(SourcedExecutionReport::new(
+            ClientId::from("SIM"),
+            ExecutionReport::Fill(Box::new(report)),
+        )))
         .unwrap();
 
         let received = rx.recv().await.unwrap();
         match received {
-            ExecutionEvent::Report(ExecutionReport::Fill(r)) => {
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(r),
+                ..
+            }) => {
                 assert_eq!(r.venue_order_id.as_str(), "V-001");
                 assert_eq!(r.trade_id.to_string(), "T-001");
             }
@@ -1546,14 +1659,18 @@ mod tests {
             None,
         );
 
-        tx.send(ExecutionEvent::Report(ExecutionReport::Position(Box::new(
-            report,
-        ))))
+        tx.send(ExecutionEvent::Report(SourcedExecutionReport::new(
+            ClientId::from("SIM"),
+            ExecutionReport::Position(Box::new(report)),
+        )))
         .unwrap();
 
         let received = rx.recv().await.unwrap();
         match received {
-            ExecutionEvent::Report(ExecutionReport::Position(r)) => {
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Position(r),
+                ..
+            }) => {
                 assert_eq!(r.venue_position_id.unwrap().as_str(), "P-001");
             }
             _ => panic!("Expected PositionStatusReport"),
@@ -1697,9 +1814,10 @@ mod tests {
             None,
         );
         exec_evt_tx
-            .send(ExecutionEvent::Report(ExecutionReport::Order(Box::new(
-                order_status,
-            ))))
+            .send(ExecutionEvent::Report(SourcedExecutionReport::new(
+                ClientId::from("SIM"),
+                ExecutionReport::Order(Box::new(order_status)),
+            )))
             .unwrap();
 
         // Send execution report (Fill)
@@ -1720,9 +1838,10 @@ mod tests {
             None,
         );
         exec_evt_tx
-            .send(ExecutionEvent::Report(ExecutionReport::Fill(Box::new(
-                fill,
-            ))))
+            .send(ExecutionEvent::Report(SourcedExecutionReport::new(
+                ClientId::from("SIM"),
+                ExecutionReport::Fill(Box::new(fill)),
+            )))
             .unwrap();
 
         // Send execution report (Position)
@@ -1738,9 +1857,10 @@ mod tests {
             None,
         );
         exec_evt_tx
-            .send(ExecutionEvent::Report(ExecutionReport::Position(Box::new(
-                position,
-            ))))
+            .send(ExecutionEvent::Report(SourcedExecutionReport::new(
+                ClientId::from("SIM"),
+                ExecutionReport::Position(Box::new(position)),
+            )))
             .unwrap();
 
         // Send account event

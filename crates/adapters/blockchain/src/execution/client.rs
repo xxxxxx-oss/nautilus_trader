@@ -259,6 +259,7 @@ impl BlockchainExecutionClient {
         let emitter = ExecutionEventEmitter::new(
             get_atomic_clock_realtime(),
             core_client.trader_id,
+            core_client.client_id,
             core_client.account_id,
             core_client.account_type,
             core_client.base_currency,

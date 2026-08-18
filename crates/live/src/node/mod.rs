@@ -90,7 +90,8 @@ use nautilus_common::{
     live::dst,
     log_info,
     messages::{
-        DataEvent, ExecutionEvent, ExecutionReport, SystemCommand, SystemEvent,
+        DataEvent, ExecutionEvent, ExecutionReport, SourcedExecutionReport, SystemCommand,
+        SystemEvent,
         data::DataCommand,
         execution::{GenerateOrderStatusReports, GeneratePositionStatusReports, TradingCommand},
         system::{QueueStateChanged, SocketStateChange, SocketStateChanged},
@@ -801,8 +802,8 @@ impl LiveNode {
 
                     let result = self
                         .exec_manager
-                        .reconcile_execution_mass_status(mass_status, exec_engine_rc)
-                        .await;
+                        .reconcile_execution_mass_status(client_id, mass_status, exec_engine_rc)
+                        .await?;
 
                     anyhow::ensure!(
                         self.kernel
@@ -1917,11 +1918,28 @@ impl LiveNode {
     }
 
     fn process_exec_event(&mut self, event: ExecutionEvent) {
+        let sourced_report = match &event {
+            ExecutionEvent::Report(report) => Some(report.clone()),
+            _ => None,
+        };
         let Some(close_ids) = self.observe_exec_event_before_dispatch(&event) else {
             return;
         };
 
         self.dispatch_exec_event_and_commit_fill(event);
+
+        if let Some(sourced) = &sourced_report {
+            let observation = {
+                let exec_engine = self.kernel.exec_engine.borrow();
+                self.exec_manager
+                    .observe_execution_report(sourced, &exec_engine)
+            };
+
+            if let Err(e) = observation {
+                log::error!("Execution report became invalid during dispatch: {e:#}");
+                return;
+            }
+        }
 
         for client_order_id in &close_ids {
             let is_closed = self
@@ -2357,7 +2375,18 @@ impl LiveNode {
                     close_ids.push(canceled.client_order_id);
                 }
             }
-            ExecutionEvent::Report(report) => {
+            ExecutionEvent::Report(sourced) => {
+                if let Err(e) = self
+                    .kernel
+                    .exec_engine
+                    .borrow()
+                    .preflight_execution_report(sourced)
+                {
+                    log::error!("Cannot dispatch execution report: {e:#}");
+                    return None;
+                }
+
+                let report = &sourced.report;
                 if let ExecutionReport::Fill(fill_report) = report
                     && self.exec_manager.is_fill_recently_processed(
                         fill_report.account_id,
@@ -2371,7 +2400,6 @@ impl LiveNode {
                     );
                     return None;
                 }
-                self.exec_manager.observe_execution_report(report);
 
                 if let Some(client_order_id) = Self::closed_order_report_client_order_id(report) {
                     close_ids.push(client_order_id);
@@ -3362,7 +3390,7 @@ struct PendingEvents {
     system_commands: Vec<SystemCommand>,
     data_evts: Vec<DataEvent>,
     data_cmds: Vec<DataCommand>,
-    exec_reports: Vec<ExecutionReport>,
+    exec_reports: Vec<SourcedExecutionReport>,
     order_evts: Vec<OrderEventAny>,
     exec_cmds: Vec<TradingCommandMessage>,
 }
@@ -3916,6 +3944,12 @@ mod tests {
         let account_id = AccountId::from("TEST-001");
         let instrument_id = InstrumentId::from("TEST.VENUE");
         let trade_id = TradeId::from("T-001");
+        register_test_execution_client(
+            &node,
+            ClientId::from("TEST"),
+            account_id,
+            instrument_id.venue,
+        );
 
         let close_ids = node.observe_exec_event_before_dispatch(&event);
         assert_eq!(close_ids, Some(Vec::new()));
@@ -3930,6 +3964,38 @@ mod tests {
 
         let close_ids = node.observe_exec_event_before_dispatch(&event);
         assert_eq!(close_ids, None);
+    }
+
+    #[rstest]
+    fn test_exec_report_validates_source_before_recent_fill_deduplication() {
+        let config = LiveNodeConfig {
+            exec_engine: crate::config::LiveExecEngineConfig {
+                reconciliation: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut node =
+            LiveNode::build("UnregisteredRecentFillNode".to_string(), Some(config)).unwrap();
+        let event = stub_exec_event();
+        let account_id = AccountId::from("TEST-001");
+        let instrument_id = InstrumentId::from("TEST.VENUE");
+        let trade_id = TradeId::from("T-001");
+
+        node.exec_manager
+            .mark_fill_processed(account_id, instrument_id, trade_id);
+
+        let ExecutionEvent::Report(sourced) = &event else {
+            unreachable!();
+        };
+        let error = node
+            .kernel
+            .exec_engine
+            .borrow()
+            .preflight_execution_report(sourced)
+            .expect_err("unregistered source must fail preflight");
+        assert!(error.to_string().contains("source TEST is not registered"));
+        assert_eq!(node.observe_exec_event_before_dispatch(&event), None);
     }
 
     #[rstest]
@@ -3984,6 +4050,7 @@ mod tests {
             .borrow_mut()
             .add_instrument(InstrumentAny::CryptoPerpetual(instrument))
             .unwrap();
+        register_test_execution_client(&node, client_id, account_id, instrument_id.venue);
         insert_accepted_limit_order_in_node(
             &node,
             account_id,
@@ -4056,7 +4123,7 @@ mod tests {
         } else {
             ExecutionReport::Order(Box::new(report))
         };
-        let event = ExecutionEvent::Report(report);
+        let event = ExecutionEvent::Report(SourcedExecutionReport::new(client_id, report));
 
         node.process_exec_event(event);
 
@@ -5414,6 +5481,25 @@ mod tests {
             .unwrap();
     }
 
+    fn register_test_execution_client(
+        node: &LiveNode,
+        client_id: ClientId,
+        account_id: AccountId,
+        venue: Venue,
+    ) {
+        node.kernel
+            .exec_engine
+            .borrow_mut()
+            .register_client(Box::new(StubExecutionClient::new(
+                client_id,
+                account_id,
+                venue,
+                OmsType::Netting,
+                None,
+            )))
+            .unwrap();
+    }
+
     fn recent_fill_test_fixture(name: &str) -> (LiveNode, OrderEventAny, InstrumentAny) {
         let config = LiveNodeConfig {
             exec_engine: crate::config::LiveExecEngineConfig {
@@ -5433,6 +5519,7 @@ mod tests {
             .borrow_mut()
             .add_instrument(instrument.clone())
             .unwrap();
+        register_test_execution_client(&node, client_id, account_id, instrument.id().venue);
         insert_accepted_limit_order_in_node(
             &node,
             account_id,
@@ -5464,23 +5551,26 @@ mod tests {
     }
 
     fn fill_report_event(fill: &OrderFilled) -> ExecutionEvent {
-        ExecutionEvent::Report(ExecutionReport::Fill(Box::new(FillReport::new(
-            fill.account_id,
-            fill.instrument_id,
-            fill.venue_order_id,
-            fill.trade_id,
-            fill.order_side,
-            fill.last_qty,
-            fill.last_px,
-            fill.commission
-                .unwrap_or_else(|| Money::zero(fill.currency)),
-            fill.liquidity_side,
-            Some(fill.client_order_id),
-            fill.position_id,
-            fill.ts_event,
-            fill.ts_init,
-            None,
-        ))))
+        ExecutionEvent::Report(SourcedExecutionReport::new(
+            ClientId::from("TEST-RECENT-FILL"),
+            ExecutionReport::Fill(Box::new(FillReport::new(
+                fill.account_id,
+                fill.instrument_id,
+                fill.venue_order_id,
+                fill.trade_id,
+                fill.order_side,
+                fill.last_qty,
+                fill.last_px,
+                fill.commission
+                    .unwrap_or_else(|| Money::zero(fill.currency)),
+                fill.liquidity_side,
+                Some(fill.client_order_id),
+                fill.position_id,
+                fill.ts_event,
+                fill.ts_init,
+                None,
+            ))),
+        ))
     }
 
     fn is_recent_fill(node: &LiveNode, fill: &OrderFilled) -> bool {
@@ -6790,22 +6880,25 @@ mod tests {
             types::{Money, Price, Quantity},
         };
 
-        ExecutionEvent::Report(ExecutionReport::Fill(Box::new(FillReport::new(
-            AccountId::from("TEST-001"),
-            InstrumentId::from("TEST.VENUE"),
-            VenueOrderId::from("V-001"),
-            TradeId::from("T-001"),
-            OrderSide::Buy,
-            Quantity::from("1.0"),
-            Price::from("100.0"),
-            Money::from("0.01 USD"),
-            LiquiditySide::Maker,
-            None,
-            None,
-            nautilus_core::UnixNanos::default(),
-            nautilus_core::UnixNanos::default(),
-            None,
-        ))))
+        ExecutionEvent::Report(SourcedExecutionReport::new(
+            ClientId::from("TEST"),
+            ExecutionReport::Fill(Box::new(FillReport::new(
+                AccountId::from("TEST-001"),
+                InstrumentId::from("TEST.VENUE"),
+                VenueOrderId::from("V-001"),
+                TradeId::from("T-001"),
+                OrderSide::Buy,
+                Quantity::from("1.0"),
+                Price::from("100.0"),
+                Money::from("0.01 USD"),
+                LiquiditySide::Maker,
+                None,
+                None,
+                nautilus_core::UnixNanos::default(),
+                nautilus_core::UnixNanos::default(),
+                None,
+            ))),
+        ))
     }
 
     #[rstest]
@@ -7063,6 +7156,35 @@ mod tests {
         }
 
         assert!(!pending.is_empty());
+    }
+
+    #[rstest]
+    fn test_pending_drain_preserves_execution_report_source() {
+        std::thread::spawn(|| {
+            msgbus::get_message_bus().borrow_mut().dispose();
+            let received = Rc::new(RefCell::new(Vec::new()));
+            let received_handler = received.clone();
+            msgbus::register_execution_report_endpoint(
+                MessagingSwitchboard::exec_engine_reconcile_execution_report(),
+                TypedIntoHandler::from(move |report: SourcedExecutionReport| {
+                    received_handler.borrow_mut().push(report);
+                }),
+            );
+
+            let ExecutionEvent::Report(mut expected) = stub_exec_event() else {
+                unreachable!();
+            };
+            expected.client_id = ClientId::from("PENDING-SOURCE");
+            let mut pending = PendingEvents::default();
+            pending.exec_reports.push(expected.clone());
+
+            pending.drain();
+
+            assert!(pending.is_empty());
+            assert_eq!(received.borrow().as_slice(), &[expected]);
+        })
+        .join()
+        .unwrap();
     }
 
     #[rstest]

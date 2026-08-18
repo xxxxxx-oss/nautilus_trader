@@ -1011,7 +1011,7 @@ mod tests {
     use nautilus_core::{UnixNanos, collections::AtomicMap};
     use nautilus_model::{
         enums::{AccountType, LiquiditySide},
-        identifiers::{ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId},
+        identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId},
         instruments::{Instrument, InstrumentAny},
         orders::{LimitOrder, MarketOrder, Order, stubs::TestOrderEventStubs},
         types::{Currency, Money},
@@ -1055,6 +1055,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             nautilus_core::time::get_atomic_clock_realtime(),
             TraderId::from("TESTER-001"),
+            ClientId::from("POLYMARKET"),
             AccountId::from("POLY-001"),
             AccountType::Cash,
             Some(Currency::pUSD()),

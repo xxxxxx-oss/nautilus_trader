@@ -33,7 +33,7 @@ use nautilus_hyperliquid::common::consts::HYPERLIQUID_VENUE;
 use nautilus_live::ExecutionEventEmitter;
 use nautilus_model::{
     enums::AccountType,
-    identifiers::{AccountId, InstrumentId, Symbol, TraderId},
+    identifiers::{AccountId, ClientId, InstrumentId, Symbol, TraderId},
     instruments::{CryptoPerpetual, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
@@ -125,6 +125,7 @@ pub(crate) fn bench_emitter() -> (
     let mut emitter = ExecutionEventEmitter::new(
         clock(),
         trader_id(),
+        ClientId::from("HYPERLIQUID"),
         account_id(),
         AccountType::Margin,
         Some(Currency::from("USDC")),

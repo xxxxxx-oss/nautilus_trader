@@ -1170,12 +1170,12 @@ fn emit_order_rejected(
 
 #[cfg(test)]
 mod tests {
-    use nautilus_common::messages::{ExecutionEvent, ExecutionReport};
+    use nautilus_common::messages::{ExecutionEvent, ExecutionReport, SourcedExecutionReport};
     use nautilus_core::time::AtomicTime;
     use nautilus_model::{
         enums::{AccountType, OrderStatus},
         events::OrderEventAny,
-        identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
+        identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId},
         orders::{Order, builder::OrderTestBuilder},
         types::Currency,
     };
@@ -1224,6 +1224,7 @@ mod tests {
         ExecutionEventEmitter::new(
             nautilus_core::time::get_atomic_clock_realtime(),
             TraderId::from("TESTER-001"),
+            ClientId::from("POLYMARKET"),
             AccountId::from("POLY-001"),
             AccountType::Cash,
             Some(Currency::pUSD()),
@@ -1520,7 +1521,11 @@ mod tests {
         dispatch_user_message(&UserWsMessage::Order(order), &ctx, &mut state);
 
         let event = receiver.try_recv().expect("expected order report");
-        let ExecutionEvent::Report(ExecutionReport::Order(report)) = event else {
+        let ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Order(report),
+            ..
+        }) = event
+        else {
             panic!("expected an order report, was {event:?}");
         };
 
@@ -2218,7 +2223,7 @@ mod tests {
 
         let event = receiver.try_recv().expect("Expected report");
         match event {
-            ExecutionEvent::Report(report) => match report {
+            ExecutionEvent::Report(SourcedExecutionReport { report, .. }) => match report {
                 ExecutionReport::Order(order_report) => {
                     assert_eq!(order_report.filled_qty, Quantity::from("0"));
                 }
@@ -2275,7 +2280,7 @@ mod tests {
 
         let event = receiver.try_recv().expect("Expected report");
         match event {
-            ExecutionEvent::Report(report) => match report {
+            ExecutionEvent::Report(SourcedExecutionReport { report, .. }) => match report {
                 ExecutionReport::Order(order_report) => {
                     assert_eq!(order_report.filled_qty, Quantity::from("50"));
                 }

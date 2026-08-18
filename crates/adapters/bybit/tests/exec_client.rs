@@ -54,7 +54,7 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::runner::set_exec_event_sender,
     messages::{
-        ExecutionEvent,
+        ExecutionEvent, SourcedExecutionReport,
         execution::{CancelOrder, ExecutionReport, ModifyOrder, SubmitOrder},
     },
     testing::wait_until_async,
@@ -1119,7 +1119,10 @@ async fn test_exec_client_query_order() {
         .expect("channel closed");
 
     match event {
-        ExecutionEvent::Report(ExecutionReport::Order(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Order(report),
+            ..
+        }) => {
             assert_eq!(
                 report.client_order_id,
                 Some(ClientOrderId::from("client-open-1")),

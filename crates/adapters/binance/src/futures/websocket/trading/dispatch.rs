@@ -214,7 +214,7 @@ mod tests {
     use nautilus_core::time::get_atomic_clock_realtime;
     use nautilus_model::{
         enums::{AccountType, OrderSide, OrderType},
-        identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
+        identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
         types::Quantity,
     };
     use rstest::rstest;
@@ -422,6 +422,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             clock,
             TraderId::from("TESTER-001"),
+            ClientId::from("BINANCE"),
             AccountId::from("BINANCE-001"),
             AccountType::Margin,
             None,

@@ -29,7 +29,7 @@ use nautilus_kraken::websocket::dispatch::OrderIdentity;
 use nautilus_live::ExecutionEventEmitter;
 use nautilus_model::{
     enums::{AccountType, OrderSide, OrderType},
-    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId},
+    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId},
     types::Quantity,
 };
 use rust_decimal::Decimal;
@@ -42,6 +42,7 @@ pub(crate) fn test_emitter() -> (
     let mut emitter = ExecutionEventEmitter::new(
         clock,
         TraderId::from("TESTER-001"),
+        ClientId::from("KRAKEN"),
         AccountId::from("KRAKEN-001"),
         AccountType::Margin,
         None,

@@ -42,7 +42,7 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::runner::{set_data_event_sender, set_exec_event_sender},
     messages::{
-        DataEvent, ExecutionEvent,
+        DataEvent, ExecutionEvent, SourcedExecutionReport,
         execution::{
             ExecutionReport,
             cancel::{BatchCancelOrders, CancelAllOrders, CancelOrder},
@@ -1765,7 +1765,10 @@ async fn test_query_order_emits_order_status_report() {
         .expect("channel closed");
 
     match event {
-        ExecutionEvent::Report(ExecutionReport::Order(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Order(report),
+            ..
+        }) => {
             assert_eq!(report.venue_order_id.as_str(), "228059754671");
             assert_eq!(report.client_order_id, Some(client_order_id));
             assert_eq!(report.instrument_id, instrument_id);
@@ -1831,7 +1834,13 @@ async fn test_query_order_no_match_emits_nothing() {
     let mut report_seen = false;
 
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
-        if matches!(event, ExecutionEvent::Report(ExecutionReport::Order(_))) {
+        if matches!(
+            event,
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Order(_),
+                ..
+            })
+        ) {
             report_seen = true;
             break;
         }
@@ -2671,7 +2680,10 @@ async fn test_ocm_multiple_incremental_fills_emits_one_report_per_step() {
 
     for _ in 0..20 {
         match tokio::time::timeout(Duration::from_secs(3), rx.recv()).await {
-            Ok(Some(ExecutionEvent::Report(ExecutionReport::Fill(_)))) => {
+            Ok(Some(ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(_),
+                ..
+            }))) => {
                 fill_reports += 1;
                 if fill_reports >= 3 {
                     break;
@@ -2728,7 +2740,13 @@ async fn test_ocm_duplicate_frame_dedupes_fill_report() {
     let mut fill_reports = 0;
 
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
-        if matches!(event, ExecutionEvent::Report(ExecutionReport::Fill(_))) {
+        if matches!(
+            event,
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(_),
+                ..
+            })
+        ) {
             fill_reports += 1;
         }
     }
@@ -3548,7 +3566,10 @@ async fn test_query_order_recovers_from_no_session() {
         .expect("channel closed");
 
     match event {
-        ExecutionEvent::Report(ExecutionReport::Order(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Order(report),
+            ..
+        }) => {
             assert_eq!(report.venue_order_id.as_str(), "228059754671");
         }
         other => panic!("Expected OrderStatusReport after recovery, was {other:?}"),
@@ -4099,8 +4120,14 @@ async fn test_ocm_duplicate_terminal_event_is_deduped() {
 
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
         match event {
-            ExecutionEvent::Report(ExecutionReport::Order(_)) => order_status_reports += 1,
-            ExecutionEvent::Report(ExecutionReport::Fill(_)) => fill_reports += 1,
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Order(_),
+                ..
+            }) => order_status_reports += 1,
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(_),
+                ..
+            }) => fill_reports += 1,
             _ => {}
         }
     }
@@ -4424,8 +4451,10 @@ async fn test_post_reconnect_dispatches_mass_status() {
     let mut saw_mass_status = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
-        if let Ok(Some(ExecutionEvent::Report(ExecutionReport::MassStatus(_)))) =
-            tokio::time::timeout(Duration::from_millis(500), rx.recv()).await
+        if let Ok(Some(ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::MassStatus(_),
+            ..
+        }))) = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await
         {
             saw_mass_status = true;
             break;
@@ -4629,8 +4658,10 @@ async fn test_reconnect_transient_keep_alive_failure_continues_reconciliation() 
     let mut saw_mass_status = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
-        if let Ok(Some(ExecutionEvent::Report(ExecutionReport::MassStatus(_)))) =
-            tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
+        if let Ok(Some(ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::MassStatus(_),
+            ..
+        }))) = tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
         {
             saw_mass_status = true;
             break;
@@ -4837,8 +4868,10 @@ async fn test_reconnect_mass_status_failure_recovers_on_later_reconnect() {
     let mut recovered_counts = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
-        if let Ok(Some(ExecutionEvent::Report(ExecutionReport::MassStatus(status)))) =
-            tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
+        if let Ok(Some(ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::MassStatus(status),
+            ..
+        }))) = tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
         {
             let fill_count = status.fill_reports().values().map(Vec::len).sum::<usize>();
             recovered_counts = Some((status.order_reports().len(), fill_count));
@@ -4972,8 +5005,10 @@ async fn test_submit_denied_during_reconciliation() {
     let mut saw_mass_status = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
-        if let Ok(Some(ExecutionEvent::Report(ExecutionReport::MassStatus(_)))) =
-            tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
+        if let Ok(Some(ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::MassStatus(_),
+            ..
+        }))) = tokio::time::timeout(Duration::from_millis(250), rx.recv()).await
         {
             saw_mass_status = true;
             break;
@@ -5112,7 +5147,10 @@ async fn test_queued_reconnect_generation_stays_halted() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while mass_status_count < 2 && tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
-            Ok(Some(ExecutionEvent::Report(ExecutionReport::MassStatus(_)))) => {
+            Ok(Some(ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::MassStatus(_),
+                ..
+            }))) => {
                 mass_status_count += 1;
                 if mass_status_count == 1 {
                     wait_until_async(

@@ -129,8 +129,14 @@ impl BitmexExecutionClient {
         let trader_id = core.trader_id;
         let account_id = core.account_id;
         let clock = get_atomic_clock_realtime();
-        let emitter =
-            ExecutionEventEmitter::new(clock, trader_id, account_id, AccountType::Margin, None);
+        let emitter = ExecutionEventEmitter::new(
+            clock,
+            trader_id,
+            core.client_id,
+            account_id,
+            AccountType::Margin,
+            None,
+        );
         let http_client = BitmexHttpClient::new(
             Some(config.http_base_url()),
             config.api_key.clone(),
@@ -1364,7 +1370,7 @@ mod tests {
     use nautilus_common::{
         cache::Cache,
         clients::ExecutionClient,
-        messages::{ExecutionEvent, ExecutionReport},
+        messages::{ExecutionEvent, ExecutionReport, SourcedExecutionReport},
     };
     use nautilus_core::{Params, UUID4};
     use nautilus_model::{
@@ -1430,6 +1436,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             get_atomic_clock_realtime(),
             TraderId::from("TESTER-001"),
+            ClientId::from("BITMEX"),
             AccountId::from("BITMEX-001"),
             AccountType::Margin,
             None,
@@ -1646,7 +1653,10 @@ mod tests {
         dispatch_execution_fixture(&state, &emitter, account_id);
 
         match rx.try_recv().unwrap() {
-            ExecutionEvent::Report(ExecutionReport::Fill(report)) => {
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(report),
+                ..
+            }) => {
                 assert_eq!(report.account_id, account_id);
             }
             event => panic!("expected fill report, was {event:?}"),
@@ -1752,7 +1762,10 @@ mod tests {
         );
         assert!(matches!(
             rx.try_recv(),
-            Ok(ExecutionEvent::Report(ExecutionReport::Order(_)))
+            Ok(ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Order(_),
+                ..
+            }))
         ));
 
         dispatch::dispatch_ws_message(

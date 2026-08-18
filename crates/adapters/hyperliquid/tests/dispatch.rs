@@ -46,7 +46,8 @@ use nautilus_model::{
     },
     events::OrderEventAny,
     identifiers::{
-        AccountId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, VenueOrderId,
+        AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId,
+        VenueOrderId,
     },
     reports::{FillReport, OrderStatusReport},
     types::{Currency, Money, Price, Quantity},
@@ -63,6 +64,7 @@ fn test_emitter() -> (
     let mut emitter = ExecutionEventEmitter::new(
         clock,
         TraderId::from("TESTER-001"),
+        ClientId::from("HYPERLIQUID"),
         account_id(),
         AccountType::Margin,
         None,

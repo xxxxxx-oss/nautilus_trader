@@ -20,7 +20,7 @@
 //! allow-list end-to-end. Phase 7 adds envelope-aware dispatchers for the
 //! wrapper enums production code actually pushes through `send_trading_command`,
 //! `publish_order_event`, `send_execution_report`, and `publish_position_event`
-//! ([`TradingCommand`], [`OrderEventAny`], [`ExecutionReport`], [`PositionEvent`]).
+//! ([`TradingCommand`], [`OrderEventAny`], [`SourcedExecutionReport`], [`PositionEvent`]).
 //! The same pattern covers `send_data_command` and `send_data_response` ([`DataCommand`],
 //! [`DataResponse`]). These reach the bus tap as their wrapper [`std::any::TypeId`] and
 //! the bare-type registrations would miss them. Each dispatcher unwraps its variant,
@@ -44,7 +44,8 @@ use nautilus_common::{
         },
         execution::{
             BatchCancelOrders, BatchModifyOrders, CancelAllOrders, CancelOrder, ExecutionReport,
-            ModifyOrder, QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList, TradingCommand,
+            ModifyOrder, QueryAccount, QueryOrder, SourcedExecutionReport, SubmitOrder,
+            SubmitOrderList, TradingCommand,
         },
     },
     timer::TimeEvent,
@@ -138,6 +139,16 @@ pub const PAYLOAD_TYPE_ORDER_WITH_FILLS: &str = "OrderWithFills";
 pub const PAYLOAD_TYPE_POSITION_STATUS_REPORT: &str = "PositionStatusReport";
 /// The canonical `payload_type` tag for [`ExecutionMassStatus`].
 pub const PAYLOAD_TYPE_EXECUTION_MASS_STATUS: &str = "ExecutionMassStatus";
+/// The canonical sourced `payload_type` tag for [`ExecutionReport::Order`].
+pub const PAYLOAD_TYPE_SOURCED_ORDER_STATUS_REPORT: &str = "SourcedOrderStatusReport";
+/// The canonical sourced `payload_type` tag for [`ExecutionReport::Fill`].
+pub const PAYLOAD_TYPE_SOURCED_FILL_REPORT: &str = "SourcedFillReport";
+/// The canonical sourced `payload_type` tag for [`ExecutionReport::OrderWithFills`].
+pub const PAYLOAD_TYPE_SOURCED_ORDER_WITH_FILLS: &str = "SourcedOrderWithFills";
+/// The canonical sourced `payload_type` tag for [`ExecutionReport::Position`].
+pub const PAYLOAD_TYPE_SOURCED_POSITION_STATUS_REPORT: &str = "SourcedPositionStatusReport";
+/// The canonical sourced `payload_type` tag for [`ExecutionReport::MassStatus`].
+pub const PAYLOAD_TYPE_SOURCED_EXECUTION_MASS_STATUS: &str = "SourcedExecutionMassStatus";
 /// The canonical `payload_type` tag for [`PositionOpened`].
 pub const PAYLOAD_TYPE_POSITION_OPENED: &str = "PositionOpened";
 /// The canonical `payload_type` tag for [`PositionChanged`].
@@ -198,7 +209,10 @@ const PAYLOAD_TYPE_TRADING_COMMAND: &str = "TradingCommand";
 
 const PAYLOAD_TYPE_ORDER_EVENT_ANY: &str = "OrderEventAny";
 
+#[cfg(test)]
 const PAYLOAD_TYPE_EXECUTION_REPORT: &str = "ExecutionReport";
+
+const PAYLOAD_TYPE_SOURCED_EXECUTION_REPORT: &str = "SourcedExecutionReport";
 
 const PAYLOAD_TYPE_POSITION_EVENT: &str = "PositionEvent";
 
@@ -234,11 +248,11 @@ pub(crate) const DEFAULT_CAPTURE_PAYLOAD_TYPES: &[&str] = &[
     PAYLOAD_TYPE_ORDER_UPDATED,
     PAYLOAD_TYPE_ORDER_FILLED,
     PAYLOAD_TYPE_ORDER_FILL_VOIDED,
-    PAYLOAD_TYPE_ORDER_STATUS_REPORT,
-    PAYLOAD_TYPE_FILL_REPORT,
-    PAYLOAD_TYPE_ORDER_WITH_FILLS,
-    PAYLOAD_TYPE_POSITION_STATUS_REPORT,
-    PAYLOAD_TYPE_EXECUTION_MASS_STATUS,
+    PAYLOAD_TYPE_SOURCED_ORDER_STATUS_REPORT,
+    PAYLOAD_TYPE_SOURCED_FILL_REPORT,
+    PAYLOAD_TYPE_SOURCED_ORDER_WITH_FILLS,
+    PAYLOAD_TYPE_SOURCED_POSITION_STATUS_REPORT,
+    PAYLOAD_TYPE_SOURCED_EXECUTION_MASS_STATUS,
     PAYLOAD_TYPE_POSITION_OPENED,
     PAYLOAD_TYPE_POSITION_CHANGED,
     PAYLOAD_TYPE_POSITION_CLOSED,
@@ -284,7 +298,7 @@ pub fn default_registry() -> EncoderRegistry {
 /// type directly (the kernel's `RunStarted` path and a few internal tests). The envelope
 /// registrations are what production bus traffic actually hits: `send_trading_command`
 /// reaches the tap as [`TradingCommand`], `publish_order_event` reaches it as
-/// [`OrderEventAny`], `send_execution_report` reaches it as [`ExecutionReport`],
+/// [`OrderEventAny`], `send_execution_report` reaches it as [`SourcedExecutionReport`],
 /// `publish_position_event` reaches it as [`PositionEvent`], and `send_data_response`
 /// reaches it as [`DataResponse`]. Without these wrapper-aware dispatchers the tap looks
 /// up the wrapper's [`std::any::TypeId`], finds no encoder, and silently drops the
@@ -294,24 +308,17 @@ pub fn default_registry() -> EncoderRegistry {
 /// `send_account_state` both reach the tap as the same `AccountState` `TypeId`, so a
 /// single registration covers both dispatch paths.
 ///
-/// [`OrderStatusReport`], [`FillReport`], and [`PositionStatusReport`] are registered
-/// as bare types because the execution engine publishes raw venue reports through
-/// `publish_any` on `reconciliation.raw.*` topics before any state mutation. The
-/// bare-type registration is what captures those raw inputs for forensic replay.
+/// Runtime execution reports are registered only as [`SourcedExecutionReport`]. Both the
+/// engine-bound dispatch and `reconciliation.raw.*` publish retain that envelope, so the
+/// two independently captured forensic boundaries preserve their client source. Legacy
+/// bare report tags remain readable for historical forensics, and their encoders remain
+/// available to custom registries, but the default registry no longer writes unsourced
+/// report payloads.
 pub fn register_default(registry: &mut EncoderRegistry) {
     registry
         .register::<SubmitOrder, _>(payload_type(PAYLOAD_TYPE_SUBMIT_ORDER), encode_submit_order);
     registry
         .register::<OrderFilled, _>(payload_type(PAYLOAD_TYPE_ORDER_FILLED), encode_order_filled);
-    registry.register::<OrderStatusReport, _>(
-        payload_type(PAYLOAD_TYPE_ORDER_STATUS_REPORT),
-        encode_order_status_report,
-    );
-    registry.register::<FillReport, _>(payload_type(PAYLOAD_TYPE_FILL_REPORT), encode_fill_report);
-    registry.register::<PositionStatusReport, _>(
-        payload_type(PAYLOAD_TYPE_POSITION_STATUS_REPORT),
-        encode_position_status_report,
-    );
     registry.register::<TradingCommand, _>(
         payload_type(PAYLOAD_TYPE_TRADING_COMMAND),
         encode_trading_command,
@@ -320,9 +327,9 @@ pub fn register_default(registry: &mut EncoderRegistry) {
         payload_type(PAYLOAD_TYPE_ORDER_EVENT_ANY),
         encode_order_event_any,
     );
-    registry.register::<ExecutionReport, _>(
-        payload_type(PAYLOAD_TYPE_EXECUTION_REPORT),
-        encode_execution_report,
+    registry.register::<SourcedExecutionReport, _>(
+        payload_type(PAYLOAD_TYPE_SOURCED_EXECUTION_REPORT),
+        encode_sourced_execution_report,
     );
     registry.register::<PositionEvent, _>(
         payload_type(PAYLOAD_TYPE_POSITION_EVENT),
@@ -370,9 +377,9 @@ fn register_default_headers(registry: &mut EncoderRegistry) {
 /// than one tap-visible boundary (portfolio endpoint send plus strategy topic publish,
 /// command hops through risk to execution, account states on both dispatch paths, data
 /// commands through the queue endpoint and the drained execute endpoint), so the
-/// adapter captures each logical message exactly once. The venue report types
-/// deliberately carry no extractor: the raw `reconciliation.raw.*` publish and the
-/// engine-bound dispatch are distinct capture boundaries.
+/// adapter captures each logical message exactly once. [`SourcedExecutionReport`]
+/// deliberately carries no identity extractor: the raw `reconciliation.raw.*` publish
+/// and the engine-bound dispatch are distinct capture boundaries.
 fn register_default_identities(registry: &mut EncoderRegistry) {
     registry.register_identity::<SubmitOrder, _>(|command| Some(command.command_id));
     registry.register_identity::<OrderFilled, _>(|event| Some(event.event_id));
@@ -623,13 +630,117 @@ pub fn encode_order_event_any(event: &OrderEventAny) -> Result<EncodedPayload, E
     }
 }
 
-/// Encodes an [`ExecutionReport`] envelope by dispatching on the variant.
+#[derive(Serialize)]
+struct SourcedOrderStatusReportRef<'a> {
+    client_id: &'a ClientId,
+    order_report: &'a OrderStatusReport,
+}
+
+#[derive(Serialize)]
+struct SourcedFillReportRef<'a> {
+    client_id: &'a ClientId,
+    fill_report: &'a FillReport,
+}
+
+#[derive(Serialize)]
+struct SourcedOrderWithFillsRef<'a> {
+    client_id: &'a ClientId,
+    order_report: &'a OrderStatusReport,
+    fill_reports: &'a [FillReport],
+}
+
+#[derive(Serialize)]
+struct SourcedPositionStatusReportRef<'a> {
+    client_id: &'a ClientId,
+    position_report: &'a PositionStatusReport,
+}
+
+#[derive(Serialize)]
+struct SourcedExecutionMassStatusRef<'a> {
+    client_id: &'a ClientId,
+    mass_status: &'a ExecutionMassStatus,
+}
+
+/// Encodes a [`SourcedExecutionReport`] with a source-bearing named wire payload.
 ///
-/// `send_execution_report` hands the bus tap an [`ExecutionReport`] wrapper, so the tap
-/// dispatches by the wrapper's [`std::any::TypeId`] and the inner variants never reach
-/// their bare-type encoders. The dispatcher unwraps each variant, encodes the inner type
-/// with its own index keys, and stamps the inner-variant tag so forensics scans see
-/// entries identical to a bare capture path.
+/// Each report variant uses an additive `Sourced*` payload tag. The serialized map
+/// retains the emitting `client_id` beside the inner report, while the sidecar indices
+/// remain limited to client-order and venue-order IDs already supported by the store.
+///
+/// # Errors
+///
+/// Returns [`EncodeError::Serialize`] when MessagePack rejects the source-bearing
+/// payload.
+pub fn encode_sourced_execution_report(
+    sourced: &SourcedExecutionReport,
+) -> Result<EncodedPayload, EncodeError> {
+    let client_id = &sourced.client_id;
+
+    match &sourced.report {
+        ExecutionReport::Order(report) => {
+            let payload = encode_serde(&SourcedOrderStatusReportRef {
+                client_id,
+                order_report: report,
+            })?;
+            Ok(EncodedPayload::with_payload_type(
+                payload_type(PAYLOAD_TYPE_SOURCED_ORDER_STATUS_REPORT),
+                payload,
+                order_status_report_index_keys(report),
+            ))
+        }
+        ExecutionReport::Fill(report) => {
+            let payload = encode_serde(&SourcedFillReportRef {
+                client_id,
+                fill_report: report,
+            })?;
+            Ok(EncodedPayload::with_payload_type(
+                payload_type(PAYLOAD_TYPE_SOURCED_FILL_REPORT),
+                payload,
+                fill_report_index_keys(report),
+            ))
+        }
+        ExecutionReport::OrderWithFills(order, fills) => {
+            let payload = encode_serde(&SourcedOrderWithFillsRef {
+                client_id,
+                order_report: order,
+                fill_reports: fills,
+            })?;
+            Ok(EncodedPayload::with_payload_type(
+                payload_type(PAYLOAD_TYPE_SOURCED_ORDER_WITH_FILLS),
+                payload,
+                order_with_fills_index_keys(order, fills),
+            ))
+        }
+        ExecutionReport::Position(report) => {
+            let payload = encode_serde(&SourcedPositionStatusReportRef {
+                client_id,
+                position_report: report,
+            })?;
+            Ok(EncodedPayload::with_payload_type(
+                payload_type(PAYLOAD_TYPE_SOURCED_POSITION_STATUS_REPORT),
+                payload,
+                Vec::new(),
+            ))
+        }
+        ExecutionReport::MassStatus(status) => {
+            let payload = encode_serde(&SourcedExecutionMassStatusRef {
+                client_id,
+                mass_status: status,
+            })?;
+            Ok(EncodedPayload::with_payload_type(
+                payload_type(PAYLOAD_TYPE_SOURCED_EXECUTION_MASS_STATUS),
+                payload,
+                execution_mass_status_index_keys(status),
+            ))
+        }
+    }
+}
+
+/// Encodes a legacy unsourced [`ExecutionReport`] envelope by dispatching on the variant.
+///
+/// The default registry does not register this type. The original payload tags remain
+/// available for historical forensic compatibility, and callers can still opt into this
+/// encoder through a custom registry.
 ///
 /// The [`ExecutionReport::Order`] arm reuses [`encode_order_status_report`] because the
 /// bare-type encoder already exists; the remaining variants delegate to private inner
@@ -660,23 +771,10 @@ pub fn encode_execution_report(report: &ExecutionReport) -> Result<EncodedPayloa
 /// Returns [`EncodeError::Serialize`] when MessagePack rejects the payload.
 pub fn encode_fill_report(report: &FillReport) -> Result<EncodedPayload, EncodeError> {
     let payload = encode_serde(report)?;
-    let mut index_keys = Vec::with_capacity(2);
-    index_keys.push(IndexKey::new(
-        IndexKind::VenueOrderId,
-        report.venue_order_id.to_string(),
-    ));
-
-    if let Some(client_order_id) = &report.client_order_id {
-        index_keys.push(IndexKey::new(
-            IndexKind::ClientOrderId,
-            client_order_id.to_string(),
-        ));
-    }
-
     Ok(EncodedPayload::with_payload_type(
         payload_type(PAYLOAD_TYPE_FILL_REPORT),
         payload,
-        index_keys,
+        fill_report_index_keys(report),
     ))
 }
 
@@ -715,6 +813,48 @@ fn encode_order_with_fills(
         order_report: order,
         fill_reports: fills,
     })?;
+    Ok(EncodedPayload::with_payload_type(
+        payload_type(PAYLOAD_TYPE_ORDER_WITH_FILLS),
+        payload,
+        order_with_fills_index_keys(order, fills),
+    ))
+}
+
+fn order_status_report_index_keys(report: &OrderStatusReport) -> Vec<IndexKey> {
+    let mut index_keys = Vec::with_capacity(2);
+    index_keys.push(IndexKey::new(
+        IndexKind::VenueOrderId,
+        report.venue_order_id.to_string(),
+    ));
+
+    if let Some(client_order_id) = &report.client_order_id {
+        index_keys.push(IndexKey::new(
+            IndexKind::ClientOrderId,
+            client_order_id.to_string(),
+        ));
+    }
+
+    index_keys
+}
+
+fn fill_report_index_keys(report: &FillReport) -> Vec<IndexKey> {
+    let mut index_keys = Vec::with_capacity(2);
+    index_keys.push(IndexKey::new(
+        IndexKind::VenueOrderId,
+        report.venue_order_id.to_string(),
+    ));
+
+    if let Some(client_order_id) = &report.client_order_id {
+        index_keys.push(IndexKey::new(
+            IndexKind::ClientOrderId,
+            client_order_id.to_string(),
+        ));
+    }
+
+    index_keys
+}
+
+fn order_with_fills_index_keys(order: &OrderStatusReport, fills: &[FillReport]) -> Vec<IndexKey> {
     let mut index_keys = Vec::new();
     let mut seen = HashSet::new();
     push_unique_index_key(
@@ -751,17 +891,21 @@ fn encode_order_with_fills(
         }
     }
 
-    Ok(EncodedPayload::with_payload_type(
-        payload_type(PAYLOAD_TYPE_ORDER_WITH_FILLS),
-        payload,
-        index_keys,
-    ))
+    index_keys
 }
 
 fn encode_execution_mass_status(
     status: &ExecutionMassStatus,
 ) -> Result<EncodedPayload, EncodeError> {
     let payload = encode_serde(status)?;
+    Ok(EncodedPayload::with_payload_type(
+        payload_type(PAYLOAD_TYPE_EXECUTION_MASS_STATUS),
+        payload,
+        execution_mass_status_index_keys(status),
+    ))
+}
+
+fn execution_mass_status_index_keys(status: &ExecutionMassStatus) -> Vec<IndexKey> {
     let mut index_keys = Vec::new();
     let mut seen = HashSet::new();
 
@@ -806,13 +950,10 @@ fn encode_execution_mass_status(
             }
         }
     }
+
     // PositionStatusReport identifiers are not indexable today, see
     // `encode_position_status_report`.
-    Ok(EncodedPayload::with_payload_type(
-        payload_type(PAYLOAD_TYPE_EXECUTION_MASS_STATUS),
-        payload,
-        index_keys,
-    ))
+    index_keys
 }
 
 fn push_unique_index_key(
@@ -1195,19 +1336,10 @@ pub fn encode_order_status_report(
     message: &OrderStatusReport,
 ) -> Result<EncodedPayload, EncodeError> {
     let payload = encode_serde(message)?;
-    let mut index_keys = Vec::with_capacity(2);
-    index_keys.push(IndexKey::new(
-        IndexKind::VenueOrderId,
-        message.venue_order_id.to_string(),
-    ));
-
-    if let Some(client_order_id) = &message.client_order_id {
-        index_keys.push(IndexKey::new(
-            IndexKind::ClientOrderId,
-            client_order_id.to_string(),
-        ));
-    }
-    Ok(EncodedPayload::new(payload, index_keys))
+    Ok(EncodedPayload::new(
+        payload,
+        order_status_report_index_keys(message),
+    ))
 }
 
 /// Encodes an [`AccountState`] into canonical bytes with no sidecar indices.
@@ -1689,18 +1821,6 @@ mod tests {
                 registry.contains::<OrderFilled>(),
             ),
             (
-                "reconciliation.raw.order_status / OrderStatusReport",
-                registry.contains::<OrderStatusReport>(),
-            ),
-            (
-                "reconciliation.raw.fill / FillReport",
-                registry.contains::<FillReport>(),
-            ),
-            (
-                "reconciliation.raw.position / PositionStatusReport",
-                registry.contains::<PositionStatusReport>(),
-            ),
-            (
                 "send_trading_command / TradingCommand",
                 registry.contains::<TradingCommand>(),
             ),
@@ -1709,8 +1829,8 @@ mod tests {
                 registry.contains::<OrderEventAny>(),
             ),
             (
-                "send_execution_report / ExecutionReport",
-                registry.contains::<ExecutionReport>(),
+                "execution report boundaries / SourcedExecutionReport",
+                registry.contains::<SourcedExecutionReport>(),
             ),
             (
                 "publish_position_event / PositionEvent",
@@ -1742,6 +1862,10 @@ mod tests {
             missing.is_empty(),
             "missing default event-store encoder registrations for {missing:?}",
         );
+        assert!(!registry.contains::<ExecutionReport>());
+        assert!(!registry.contains::<OrderStatusReport>());
+        assert!(!registry.contains::<FillReport>());
+        assert!(!registry.contains::<PositionStatusReport>());
         assert_eq!(
             registry.len(),
             expected.len(),
@@ -2778,6 +2902,146 @@ mod tests {
             tag, PAYLOAD_TYPE_EXECUTION_REPORT,
             "wrapper fallback tag must never reach the writer",
         );
+    }
+
+    #[rstest]
+    fn sourced_order_status_report_round_trips_source_and_preserves_indices() {
+        #[derive(Deserialize)]
+        struct SourcedOrderStatusReportOwned {
+            client_id: ClientId,
+            order_report: OrderStatusReport,
+        }
+
+        let client_id = ClientId::from("ROUTING-B");
+        let report = make_order_status_report();
+        let legacy = encode_order_status_report(&report).expect("legacy encode");
+        let sourced = SourcedExecutionReport::new(
+            client_id,
+            ExecutionReport::Order(Box::new(report.clone())),
+        );
+        let encoded = encode_sourced_execution_report(&sourced).expect("encode");
+        let decoded: SourcedOrderStatusReportOwned =
+            rmp_serde::from_slice(&encoded.payload).expect("decode");
+
+        assert_eq!(
+            encoded.payload_type.expect("override").as_str(),
+            PAYLOAD_TYPE_SOURCED_ORDER_STATUS_REPORT,
+        );
+        assert_eq!(encoded.index_keys, legacy.index_keys);
+        assert_eq!(decoded.client_id, client_id);
+        assert_eq!(decoded.order_report, report);
+    }
+
+    #[rstest]
+    fn sourced_fill_report_round_trips_source_and_preserves_indices() {
+        #[derive(Deserialize)]
+        struct SourcedFillReportOwned {
+            client_id: ClientId,
+            fill_report: FillReport,
+        }
+
+        let client_id = ClientId::from("ROUTING-B");
+        let report = make_fill_report();
+        let legacy = encode_fill_report(&report).expect("legacy encode");
+        let sourced =
+            SourcedExecutionReport::new(client_id, ExecutionReport::Fill(Box::new(report.clone())));
+        let encoded = encode_sourced_execution_report(&sourced).expect("encode");
+        let decoded: SourcedFillReportOwned =
+            rmp_serde::from_slice(&encoded.payload).expect("decode");
+
+        assert_eq!(
+            encoded.payload_type.expect("override").as_str(),
+            PAYLOAD_TYPE_SOURCED_FILL_REPORT,
+        );
+        assert_eq!(encoded.index_keys, legacy.index_keys);
+        assert_eq!(decoded.client_id, client_id);
+        assert_eq!(decoded.fill_report, report);
+    }
+
+    #[rstest]
+    fn sourced_order_with_fills_round_trips_source_and_preserves_indices() {
+        #[derive(Deserialize)]
+        struct SourcedOrderWithFillsOwned {
+            client_id: ClientId,
+            order_report: OrderStatusReport,
+            fill_reports: Vec<FillReport>,
+        }
+
+        let client_id = ClientId::from("ROUTING-B");
+        let order_report = make_order_status_report();
+        let fill_reports = vec![make_fill_report()];
+        let legacy = encode_order_with_fills(&order_report, &fill_reports).expect("legacy encode");
+        let sourced = SourcedExecutionReport::new(
+            client_id,
+            ExecutionReport::OrderWithFills(Box::new(order_report.clone()), fill_reports.clone()),
+        );
+        let encoded = encode_sourced_execution_report(&sourced).expect("encode");
+        let decoded: SourcedOrderWithFillsOwned =
+            rmp_serde::from_slice(&encoded.payload).expect("decode");
+
+        assert_eq!(
+            encoded.payload_type.expect("override").as_str(),
+            PAYLOAD_TYPE_SOURCED_ORDER_WITH_FILLS,
+        );
+        assert_eq!(encoded.index_keys, legacy.index_keys);
+        assert_eq!(decoded.client_id, client_id);
+        assert_eq!(decoded.order_report, order_report);
+        assert_eq!(decoded.fill_reports, fill_reports);
+    }
+
+    #[rstest]
+    fn sourced_position_report_round_trips_source_without_indices() {
+        #[derive(Deserialize)]
+        struct SourcedPositionStatusReportOwned {
+            client_id: ClientId,
+            position_report: PositionStatusReport,
+        }
+
+        let client_id = ClientId::from("ROUTING-B");
+        let report = make_position_status_report();
+        let sourced = SourcedExecutionReport::new(
+            client_id,
+            ExecutionReport::Position(Box::new(report.clone())),
+        );
+        let encoded = encode_sourced_execution_report(&sourced).expect("encode");
+        let decoded: SourcedPositionStatusReportOwned =
+            rmp_serde::from_slice(&encoded.payload).expect("decode");
+
+        assert_eq!(
+            encoded.payload_type.expect("override").as_str(),
+            PAYLOAD_TYPE_SOURCED_POSITION_STATUS_REPORT,
+        );
+        assert!(encoded.index_keys.is_empty());
+        assert_eq!(decoded.client_id, client_id);
+        assert_eq!(decoded.position_report, report);
+    }
+
+    #[rstest]
+    fn sourced_mass_status_round_trips_source_and_preserves_indices() {
+        #[derive(Deserialize)]
+        struct SourcedExecutionMassStatusOwned {
+            client_id: ClientId,
+            mass_status: ExecutionMassStatus,
+        }
+
+        let client_id = ClientId::from("BINANCE");
+        let status = make_execution_mass_status_with_reports();
+        let legacy = encode_execution_mass_status(&status).expect("legacy encode");
+        let sourced = SourcedExecutionReport::new(
+            client_id,
+            ExecutionReport::MassStatus(Box::new(status.clone())),
+        );
+        let encoded = encode_sourced_execution_report(&sourced).expect("encode");
+        let decoded: SourcedExecutionMassStatusOwned =
+            rmp_serde::from_slice(&encoded.payload).expect("decode");
+
+        assert_eq!(
+            encoded.payload_type.expect("override").as_str(),
+            PAYLOAD_TYPE_SOURCED_EXECUTION_MASS_STATUS,
+        );
+        assert_eq!(encoded.index_keys, legacy.index_keys);
+        assert_eq!(decoded.client_id, client_id);
+        assert_eq!(decoded.mass_status, status);
     }
 
     fn opening_order_id() -> ClientOrderId {

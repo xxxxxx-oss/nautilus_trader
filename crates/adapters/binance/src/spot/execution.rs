@@ -180,6 +180,7 @@ impl BinanceSpotExecutionClient {
         let emitter = ExecutionEventEmitter::new(
             clock,
             core.trader_id,
+            core.client_id,
             core.account_id,
             core.account_type,
             core.base_currency,
@@ -3448,6 +3449,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             clock,
             TraderId::from("TESTER-001"),
+            ClientId::from("BINANCE"),
             AccountId::from("BINANCE-001"),
             AccountType::Cash,
             None,

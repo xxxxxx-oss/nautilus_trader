@@ -272,6 +272,7 @@ impl LighterExecutionClient {
         let emitter = ExecutionEventEmitter::new(
             clock,
             core.trader_id,
+            core.client_id,
             core.account_id,
             AccountType::Margin,
             None,
@@ -5548,7 +5549,9 @@ mod tests {
         cache::Cache,
         clock::TestClock,
         factories::OrderFactory,
-        messages::{ExecutionEvent, ExecutionReport as EngineExecutionReport},
+        messages::{
+            ExecutionEvent, ExecutionReport as EngineExecutionReport, SourcedExecutionReport,
+        },
         testing::wait_until_async,
     };
     use nautilus_model::{
@@ -8597,6 +8600,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             get_atomic_clock_realtime(),
             trader_id(),
+            client_id(),
             account_id(),
             AccountType::Margin,
             None,
@@ -9225,12 +9229,12 @@ mod tests {
         let events = drain_events(&mut rig.rx);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            ExecutionEvent::Report(report) => match report {
-                EngineExecutionReport::Order(r) => {
-                    assert_eq!(r.venue_order_id.to_string(), "281476929510110");
-                }
-                other => panic!("expected order report, was {other:?}"),
-            },
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: EngineExecutionReport::Order(r),
+                ..
+            }) => {
+                assert_eq!(r.venue_order_id.to_string(), "281476929510110");
+            }
             other => panic!("expected report, was {other:?}"),
         }
         assert!(
@@ -9259,7 +9263,10 @@ mod tests {
         let external = drain_events(&mut rig.rx);
         assert_eq!(external.len(), 1);
         match &external[0] {
-            ExecutionEvent::Report(EngineExecutionReport::Order(report)) => {
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: EngineExecutionReport::Order(report),
+                ..
+            }) => {
                 assert_eq!(report.venue_order_id, venue_order_id);
                 assert_eq!(
                     report.client_order_id,
@@ -9286,7 +9293,10 @@ mod tests {
         let replayed_external = drain_events(&mut rig.rx);
         assert_eq!(replayed_external.len(), 1);
         match &replayed_external[0] {
-            ExecutionEvent::Report(EngineExecutionReport::Order(report)) => {
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: EngineExecutionReport::Order(report),
+                ..
+            }) => {
                 assert_eq!(report.venue_order_id, venue_order_id);
                 assert_eq!(
                     report.client_order_id,

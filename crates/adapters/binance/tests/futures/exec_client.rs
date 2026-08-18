@@ -58,7 +58,7 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::runner::set_exec_event_sender,
     messages::{
-        ExecutionEvent,
+        ExecutionEvent, SourcedExecutionReport,
         execution::{
             BatchCancelOrders, CancelAllOrders, CancelOrder, ExecutionReport, GenerateFillReports,
             GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
@@ -3376,7 +3376,11 @@ async fn test_query_order_bypasses_regular_order_id_collision() {
         .await
         .expect("timed out waiting for query_order report")
         .expect("execution event channel closed");
-    let ExecutionEvent::Report(ExecutionReport::Order(report)) = event else {
+    let ExecutionEvent::Report(SourcedExecutionReport {
+        report: ExecutionReport::Order(report),
+        ..
+    }) = event
+    else {
         panic!("Expected OrderStatusReport, was {event:?}");
     };
     assert_eq!(

@@ -42,13 +42,28 @@ pub use self::{
 };
 
 /// Execution report variants for reconciliation.
-#[derive(Clone, Debug, Display)]
+#[derive(Clone, Debug, PartialEq, Display)]
 pub enum ExecutionReport {
     Order(Box<OrderStatusReport>),
     Fill(Box<FillReport>),
     OrderWithFills(Box<OrderStatusReport>, Vec<FillReport>),
     Position(Box<PositionStatusReport>),
     MassStatus(Box<ExecutionMassStatus>),
+}
+
+/// An execution report stamped with the client that emitted it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourcedExecutionReport {
+    pub client_id: ClientId,
+    pub report: ExecutionReport,
+}
+
+impl SourcedExecutionReport {
+    /// Creates a new [`SourcedExecutionReport`].
+    #[must_use]
+    pub const fn new(client_id: ClientId, report: ExecutionReport) -> Self {
+        Self { client_id, report }
+    }
 }
 
 #[expect(clippy::large_enum_variant)]

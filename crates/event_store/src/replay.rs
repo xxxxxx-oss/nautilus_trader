@@ -57,8 +57,11 @@ use crate::capture::builtins::{
     PAYLOAD_TYPE_FILL_REPORT, PAYLOAD_TYPE_FORWARD_PRICES_RESPONSE, PAYLOAD_TYPE_MODIFY_ORDER,
     PAYLOAD_TYPE_ORDER_STATUS_REPORT, PAYLOAD_TYPE_ORDER_WITH_FILLS,
     PAYLOAD_TYPE_POSITION_STATUS_REPORT, PAYLOAD_TYPE_QUERY_ACCOUNT, PAYLOAD_TYPE_QUERY_ORDER,
-    PAYLOAD_TYPE_REQUEST_COMMAND, PAYLOAD_TYPE_SUBMIT_ORDER, PAYLOAD_TYPE_SUBSCRIBE_COMMAND,
-    PAYLOAD_TYPE_TIME_EVENT, PAYLOAD_TYPE_UNSUBSCRIBE_COMMAND,
+    PAYLOAD_TYPE_REQUEST_COMMAND, PAYLOAD_TYPE_SOURCED_EXECUTION_MASS_STATUS,
+    PAYLOAD_TYPE_SOURCED_FILL_REPORT, PAYLOAD_TYPE_SOURCED_ORDER_STATUS_REPORT,
+    PAYLOAD_TYPE_SOURCED_ORDER_WITH_FILLS, PAYLOAD_TYPE_SOURCED_POSITION_STATUS_REPORT,
+    PAYLOAD_TYPE_SUBMIT_ORDER, PAYLOAD_TYPE_SUBSCRIBE_COMMAND, PAYLOAD_TYPE_TIME_EVENT,
+    PAYLOAD_TYPE_UNSUBSCRIBE_COMMAND,
 };
 #[cfg(all(test, feature = "defi"))]
 use crate::capture::builtins::{
@@ -163,6 +166,11 @@ pub(crate) const FORENSIC_ONLY_CAPTURE_PAYLOAD_TYPES: &[&str] = &[
     PAYLOAD_TYPE_ORDER_WITH_FILLS,
     PAYLOAD_TYPE_POSITION_STATUS_REPORT,
     PAYLOAD_TYPE_EXECUTION_MASS_STATUS,
+    PAYLOAD_TYPE_SOURCED_ORDER_STATUS_REPORT,
+    PAYLOAD_TYPE_SOURCED_FILL_REPORT,
+    PAYLOAD_TYPE_SOURCED_ORDER_WITH_FILLS,
+    PAYLOAD_TYPE_SOURCED_POSITION_STATUS_REPORT,
+    PAYLOAD_TYPE_SOURCED_EXECUTION_MASS_STATUS,
     PAYLOAD_TYPE_TIME_EVENT,
     PAYLOAD_TYPE_REQUEST_COMMAND,
     PAYLOAD_TYPE_SUBSCRIBE_COMMAND,
@@ -178,6 +186,15 @@ pub(crate) const FORENSIC_ONLY_CAPTURE_PAYLOAD_TYPES: &[&str] = &[
     PAYLOAD_TYPE_BOOK_DELTAS_RESPONSE,
     PAYLOAD_TYPE_BOOK_DEPTH_RESPONSE,
     PAYLOAD_TYPE_FORWARD_PRICES_RESPONSE,
+];
+
+#[cfg(test)]
+const LEGACY_FORENSIC_ONLY_CAPTURE_PAYLOAD_TYPES: &[&str] = &[
+    PAYLOAD_TYPE_ORDER_STATUS_REPORT,
+    PAYLOAD_TYPE_FILL_REPORT,
+    PAYLOAD_TYPE_ORDER_WITH_FILLS,
+    PAYLOAD_TYPE_POSITION_STATUS_REPORT,
+    PAYLOAD_TYPE_EXECUTION_MASS_STATUS,
 ];
 
 /// Inclusive event-store `seq` bounds for replay input scans.
@@ -2538,6 +2555,9 @@ mod tests {
                 PAYLOAD_TYPE_ORDER_STATUS_REPORT,
                 PAYLOAD_TYPE_ORDER_WITH_FILLS,
                 PAYLOAD_TYPE_EXECUTION_MASS_STATUS,
+                PAYLOAD_TYPE_SOURCED_ORDER_STATUS_REPORT,
+                PAYLOAD_TYPE_SOURCED_ORDER_WITH_FILLS,
+                PAYLOAD_TYPE_SOURCED_EXECUTION_MASS_STATUS,
             ],
         ),
         cache_mutation(
@@ -3230,7 +3250,20 @@ mod tests {
         let extra: Vec<_> = classified
             .iter()
             .copied()
-            .filter(|payload_type| !seen_defaults.contains(payload_type))
+            .filter(|payload_type| {
+                !seen_defaults.contains(payload_type)
+                    && !LEGACY_FORENSIC_ONLY_CAPTURE_PAYLOAD_TYPES.contains(payload_type)
+            })
+            .collect();
+        let missing_legacy: Vec<_> = LEGACY_FORENSIC_ONLY_CAPTURE_PAYLOAD_TYPES
+            .iter()
+            .copied()
+            .filter(|payload_type| !classified.contains(payload_type))
+            .collect();
+        let active_legacy: Vec<_> = LEGACY_FORENSIC_ONLY_CAPTURE_PAYLOAD_TYPES
+            .iter()
+            .copied()
+            .filter(|payload_type| seen_defaults.contains(payload_type))
             .collect();
 
         assert!(
@@ -3243,11 +3276,20 @@ mod tests {
         );
         assert!(
             unclassified.is_empty(),
-            "default capture payload types must be cache replayed or forensic-only: {unclassified:?}",
+            "default capture payload types must be replayed or forensic-only: {unclassified:?}",
         );
         assert!(
             extra.is_empty(),
-            "cache replay classification must not list uncaptured payload types: {extra:?}",
+            "cache replay classification must not list uncaptured non-legacy payload types: \
+             {extra:?}",
+        );
+        assert!(
+            missing_legacy.is_empty(),
+            "legacy report payload types must remain forensic-only: {missing_legacy:?}",
+        );
+        assert!(
+            active_legacy.is_empty(),
+            "legacy unsourced report payload types must not remain active: {active_legacy:?}",
         );
     }
 

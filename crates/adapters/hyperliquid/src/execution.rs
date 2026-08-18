@@ -456,6 +456,7 @@ impl HyperliquidExecutionClient {
         let emitter = ExecutionEventEmitter::new(
             clock,
             core.trader_id,
+            core.client_id,
             core.account_id,
             AccountType::Margin,
             None,
@@ -3272,7 +3273,8 @@ mod tests {
         },
         events::OrderEventAny,
         identifiers::{
-            AccountId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, VenueOrderId,
+            AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId,
+            VenueOrderId,
         },
         orders::{Order, OrderAny, limit::LimitOrder, stop_market::StopMarketOrder},
         reports::{FillReport, OrderStatusReport},
@@ -3309,6 +3311,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             clock,
             TraderId::from("TESTER-001"),
+            ClientId::from("HYPERLIQUID"),
             AccountId::from("HYPERLIQUID-001"),
             AccountType::Margin,
             None,

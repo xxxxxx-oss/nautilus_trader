@@ -54,7 +54,7 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::runner::set_exec_event_sender,
     messages::{
-        ExecutionEvent, ExecutionReport,
+        ExecutionEvent, ExecutionReport, SourcedExecutionReport,
         execution::{
             BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports, ModifyOrder,
             QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList,
@@ -3358,7 +3358,13 @@ async fn test_query_order_missing_order_emits_no_order_report() {
         .expect("Timed out waiting for authenticated order query");
 
     assert_no_event_matching(&mut rx, |event| {
-        matches!(event, ExecutionEvent::Report(ExecutionReport::Order(_)))
+        matches!(
+            event,
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Order(_),
+                ..
+            })
+        )
     })
     .await;
 }

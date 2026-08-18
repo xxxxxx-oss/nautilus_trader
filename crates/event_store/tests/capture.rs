@@ -18,7 +18,7 @@
 //!
 //! Exercises the SPEC's "capture before fanout" contract end-to-end with the Phase 6
 //! representative samples: a command (`SubmitOrder`), a generated event (`OrderFilled`),
-//! and a raw venue report (`OrderStatusReport`).
+//! and a sourced venue report (`SourcedExecutionReport`).
 
 use std::{
     any::Any,
@@ -33,10 +33,11 @@ use indexmap::IndexMap;
 use nautilus_common::{
     messages::{
         data::{DataResponse, QuotesResponse},
-        execution::{SubmitOrder, TradingCommand},
+        execution::{ExecutionReport, SourcedExecutionReport, SubmitOrder, TradingCommand},
     },
     msgbus::{
         self, BusTap, Endpoint, MStr, MessageBus, MessagingSwitchboard, ShareableMessageHandler,
+        TypedIntoHandler,
     },
 };
 use nautilus_core::{UUID4, UnixNanos, time::get_atomic_clock_static};
@@ -60,6 +61,7 @@ use nautilus_model::{
     types::{Currency, Money, Price, Quantity},
 };
 use rstest::rstest;
+use serde::Deserialize;
 use ustr::Ustr;
 
 const INSTANCE_ID: &str = "trader-001";
@@ -236,6 +238,24 @@ fn make_order_status_report(
     )
 }
 
+#[derive(Deserialize)]
+struct SourcedOrderStatusReportOwned {
+    client_id: ClientId,
+    order_report: OrderStatusReport,
+}
+
+#[derive(Deserialize)]
+struct SourcedFillReportOwned {
+    client_id: ClientId,
+    fill_report: FillReport,
+}
+
+#[derive(Deserialize)]
+struct SourcedPositionStatusReportOwned {
+    client_id: ClientId,
+    position_report: PositionStatusReport,
+}
+
 #[rstest]
 fn end_to_end_capture_writes_command_event_and_report() {
     // Construct a real MessageBus on this thread so capture runs in the same
@@ -275,12 +295,29 @@ fn end_to_end_capture_writes_command_event_and_report() {
         .expect("capture event");
     assert!(captured_event, "event must be allow-listed");
 
-    // Capture the raw venue report, emulating the reconciliation publish boundary.
+    // The active registry rejects legacy bare reports and captures only the sourced
+    // envelope used at both runtime report boundaries.
     let report = make_order_status_report(client_order_id, venue_order_id);
-    let captured_report = adapter
+    let captured_legacy_report = adapter
         .capture::<OrderStatusReport>(
             Topic::from("reports.OrderStatusReport.BINANCE"),
             &report,
+            Headers::empty(),
+            report.ts_init,
+        )
+        .expect("capture legacy report");
+    assert!(
+        !captured_legacy_report,
+        "legacy report must not be allow-listed"
+    );
+
+    let source = ClientId::from("BINANCE");
+    let sourced_report =
+        SourcedExecutionReport::new(source, ExecutionReport::Order(Box::new(report.clone())));
+    let captured_report = adapter
+        .capture::<SourcedExecutionReport>(
+            Topic::from("reports.SourcedOrderStatusReport.BINANCE"),
+            &sourced_report,
             Headers::empty(),
             report.ts_init,
         )
@@ -301,11 +338,18 @@ fn end_to_end_capture_writes_command_event_and_report() {
     assert_eq!(event_entry.topic.as_ref(), "events.order.OrderFilled.S-001");
 
     let report_entry = backend.scan_seq(3).expect("scan").expect("present");
-    assert_eq!(report_entry.payload_type.as_str(), "OrderStatusReport");
+    assert_eq!(
+        report_entry.payload_type.as_str(),
+        "SourcedOrderStatusReport",
+    );
     assert_eq!(
         report_entry.topic.as_ref(),
-        "reports.OrderStatusReport.BINANCE"
+        "reports.SourcedOrderStatusReport.BINANCE"
     );
+    let decoded: SourcedOrderStatusReportOwned =
+        rmp_serde::from_slice(&report_entry.payload).expect("decode sourced report");
+    assert_eq!(decoded.client_id, source);
+    assert_eq!(decoded.order_report, report);
 
     // Sidecar indices must point at the entries that mentioned each id; the command's
     // entry is the earliest mention of the client order id, and the event's entry is
@@ -489,7 +533,7 @@ fn run_ended_draft() -> EntryDraft {
     }
 }
 
-/// Minimal [`BusTap`] that forwards every publish to a [`BusCaptureAdapter`].
+/// Minimal [`BusTap`] that forwards every dispatch to a [`BusCaptureAdapter`].
 ///
 /// Mirrors the kernel's tap so tests can exercise `publish_any -> tap -> writer`
 /// without pulling in the kernel lifecycle.
@@ -504,7 +548,14 @@ impl BusTap for AdapterTap {
             .capture_any(topic, message, Headers::empty(), UnixNanos::from(0));
     }
 
-    fn on_send(&self, _endpoint: MStr<Endpoint>, _message: &dyn Any) {}
+    fn on_send(&self, endpoint: MStr<Endpoint>, message: &dyn Any) {
+        let _ = self.adapter.capture_any(
+            Topic::from(*endpoint),
+            message,
+            Headers::empty(),
+            UnixNanos::from(0),
+        );
+    }
 }
 
 fn make_fill_report_for_capture(
@@ -545,11 +596,10 @@ fn make_position_status_report_for_capture() -> PositionStatusReport {
 
 #[rstest]
 fn raw_report_topics_capture_via_publish_any() {
-    // The execution engine publishes raw venue reports on the
-    // `reconciliation.raw.*` topics before reconciliation mutates local state.
-    // Each topic must produce a captured entry whose payload decodes back to the
-    // original report. Replay treats these raw inputs as forensic records; it
-    // applies the synthesized events captured later rather than running reconciliation.
+    // The execution engine publishes the sourced envelope on `reconciliation.raw.*`
+    // topics before reconciliation mutates local state. Each topic must preserve the
+    // source and inner report. Replay treats these inputs as forensic records; it applies
+    // synthesized events captured later rather than running reconciliation.
     let bus = MessageBus::new(TraderId::from("TRADER-001"), UUID4::new(), None, None);
     let _bus_rc = bus.register_message_bus();
 
@@ -567,23 +617,34 @@ fn raw_report_topics_capture_via_publish_any() {
 
     let client_order_id = ClientOrderId::from("O-raw-1");
     let venue_order_id = VenueOrderId::from("V-raw-1");
+    let source = ClientId::from("BINANCE");
 
     let order_report = make_order_status_report(client_order_id, venue_order_id);
+    let sourced_order = SourcedExecutionReport::new(
+        source,
+        ExecutionReport::Order(Box::new(order_report.clone())),
+    );
     msgbus::publish_any(
         MessagingSwitchboard::reconciliation_raw_order_status_report_topic(),
-        &order_report,
+        &sourced_order,
     );
 
     let fill_report = make_fill_report_for_capture(client_order_id, venue_order_id);
+    let sourced_fill =
+        SourcedExecutionReport::new(source, ExecutionReport::Fill(Box::new(fill_report.clone())));
     msgbus::publish_any(
         MessagingSwitchboard::reconciliation_raw_fill_report_topic(),
-        &fill_report,
+        &sourced_fill,
     );
 
     let position_report = make_position_status_report_for_capture();
+    let sourced_position = SourcedExecutionReport::new(
+        source,
+        ExecutionReport::Position(Box::new(position_report.clone())),
+    );
     msgbus::publish_any(
         MessagingSwitchboard::reconciliation_raw_position_status_report_topic(),
-        &position_report,
+        &sourced_position,
     );
 
     drain(&writer, 3);
@@ -603,32 +664,104 @@ fn raw_report_topics_capture_via_publish_any() {
     let order_entry = backend.scan_seq(1).expect("scan").expect("present");
     assert_eq!(
         order_entry.payload_type.as_str(),
-        "OrderStatusReport",
-        "raw OrderStatusReport must keep its bare-type payload tag",
+        "SourcedOrderStatusReport",
+        "raw order status capture must retain its sourced payload tag",
     );
     assert_eq!(
         order_entry.topic.as_ref(),
         "reconciliation.raw.OrderStatusReport",
     );
-    let decoded_order: OrderStatusReport =
+    let decoded_order: SourcedOrderStatusReportOwned =
         rmp_serde::from_slice(&order_entry.payload).expect("decode order");
-    assert_eq!(decoded_order, order_report);
+    assert_eq!(decoded_order.client_id, source);
+    assert_eq!(decoded_order.order_report, order_report);
 
     let fill_entry = backend.scan_seq(2).expect("scan").expect("present");
-    assert_eq!(fill_entry.payload_type.as_str(), "FillReport");
+    assert_eq!(fill_entry.payload_type.as_str(), "SourcedFillReport");
     assert_eq!(fill_entry.topic.as_ref(), "reconciliation.raw.FillReport");
-    let decoded_fill: FillReport = rmp_serde::from_slice(&fill_entry.payload).expect("decode fill");
-    assert_eq!(decoded_fill, fill_report);
+    let decoded_fill: SourcedFillReportOwned =
+        rmp_serde::from_slice(&fill_entry.payload).expect("decode fill");
+    assert_eq!(decoded_fill.client_id, source);
+    assert_eq!(decoded_fill.fill_report, fill_report);
 
     let position_entry = backend.scan_seq(3).expect("scan").expect("present");
-    assert_eq!(position_entry.payload_type.as_str(), "PositionStatusReport");
+    assert_eq!(
+        position_entry.payload_type.as_str(),
+        "SourcedPositionStatusReport",
+    );
     assert_eq!(
         position_entry.topic.as_ref(),
         "reconciliation.raw.PositionStatusReport",
     );
-    let decoded_position: PositionStatusReport =
+    let decoded_position: SourcedPositionStatusReportOwned =
         rmp_serde::from_slice(&position_entry.payload).expect("decode position");
-    assert_eq!(decoded_position, position_report);
+    assert_eq!(decoded_position.client_id, source);
+    assert_eq!(decoded_position.position_report, position_report);
+
+    drop(backend);
+    msgbus::clear_bus_tap();
+    drop(adapter);
+    let writer = Arc::try_unwrap(writer).expect("sole writer reference");
+    let _ = writer.close(run_ended_draft()).expect("close writer");
+}
+
+#[rstest]
+fn sourced_report_capture_keeps_engine_and_raw_boundaries_distinct() {
+    let bus = MessageBus::new(TraderId::from("TRADER-001"), UUID4::new(), None, None);
+    let _bus_rc = bus.register_message_bus();
+
+    let (writer, backend_arc) = writer_with_open_run("run-capture-report-boundaries", noop_halt());
+    let registry = Arc::new(default_registry());
+    let adapter = Arc::new(BusCaptureAdapter::new(
+        Arc::clone(&writer),
+        registry,
+        noop_halt(),
+    ));
+    let tap: Rc<dyn BusTap> = Rc::new(AdapterTap {
+        adapter: Arc::clone(&adapter),
+    });
+    msgbus::set_bus_tap(tap);
+
+    let client_order_id = ClientOrderId::from("O-boundary-1");
+    let venue_order_id = VenueOrderId::from("V-boundary-1");
+    let report = make_order_status_report(client_order_id, venue_order_id);
+    let sourced = SourcedExecutionReport::new(
+        ClientId::from("BINANCE"),
+        ExecutionReport::Order(Box::new(report)),
+    );
+    let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
+    msgbus::register_execution_report_endpoint(
+        endpoint,
+        TypedIntoHandler::from(|_report: SourcedExecutionReport| {}),
+    );
+
+    msgbus::send_execution_report(endpoint, sourced.clone());
+    msgbus::publish_any(
+        MessagingSwitchboard::reconciliation_raw_order_status_report_topic(),
+        &sourced,
+    );
+
+    drain(&writer, 2);
+
+    let backend = backend_arc.lock().expect("backend");
+    assert_eq!(
+        backend.high_watermark().expect("hwm"),
+        2,
+        "engine-bound and raw report captures must not dedupe",
+    );
+    let engine_entry = backend.scan_seq(1).expect("scan").expect("present");
+    let raw_entry = backend.scan_seq(2).expect("scan").expect("present");
+    assert_eq!(engine_entry.topic.as_ref(), endpoint.as_ref());
+    assert_eq!(
+        raw_entry.topic.as_ref(),
+        "reconciliation.raw.OrderStatusReport",
+    );
+    assert_eq!(
+        engine_entry.payload_type.as_str(),
+        "SourcedOrderStatusReport",
+    );
+    assert_eq!(raw_entry.payload_type, engine_entry.payload_type);
+    assert_eq!(raw_entry.payload, engine_entry.payload);
 
     drop(backend);
     msgbus::clear_bus_tap();

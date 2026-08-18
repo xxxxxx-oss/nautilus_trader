@@ -31,7 +31,7 @@ use nautilus_common::{
     live::dst,
     log_info,
     messages::{
-        ExecutionReport,
+        ExecutionReport, SourcedExecutionReport,
         execution::{
             QueryOrder, TradingCommand,
             report::{
@@ -504,6 +504,11 @@ impl ExecutionManager {
     /// Order events are collected, sorted globally by `ts_event`, then processed through
     /// the execution engine to ensure chronological ordering across all orders.
     /// Position events are processed after all order events to ensure fills are applied first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the source identity, report scope, or cached order origin is
+    /// inconsistent before or after the raw report is published.
     #[allow(unknown_lints, reason = "Clippy lint is unavailable on Rust 1.97")]
     #[expect(
         clippy::unused_async,
@@ -512,62 +517,28 @@ impl ExecutionManager {
     )]
     pub async fn reconcile_execution_mass_status(
         &mut self,
+        source_client_id: ClientId,
         mass_status: ExecutionMassStatus,
         exec_engine: Rc<RefCell<ExecutionEngine>>,
-    ) -> ReconciliationResult {
-        if exec_engine
+    ) -> anyhow::Result<ReconciliationResult> {
+        let sourced = SourcedExecutionReport::new(
+            source_client_id,
+            ExecutionReport::MassStatus(Box::new(mass_status.clone())),
+        );
+        exec_engine
             .borrow()
-            .get_client(&mass_status.client_id)
-            .is_none()
-        {
-            log::error!(
-                "Cannot reconcile ExecutionMassStatus from unknown client {}",
-                mass_status.client_id
-            );
-            return ReconciliationResult::default();
-        }
-
+            .preflight_startup_execution_mass_status(&sourced)?;
         self.validate_mass_status_order_sources(&mass_status);
 
-        // Publish raw reports before any state mutation (including fill adjustment
-        // below, which can synthesise replacement order/fill reports). The
-        // execution engine's per-report `reconcile_*` entry points are bypassed by
-        // this path, so the capture seam lives here.
-        let raw_order_status_topic =
-            MessagingSwitchboard::reconciliation_raw_order_status_report_topic();
+        // Preserve the complete source-bound mass status as one forensic unit.
+        msgbus::publish_any(
+            MessagingSwitchboard::reconciliation_raw_execution_mass_status_topic(),
+            &sourced,
+        );
 
-        for report in mass_status.order_reports().values() {
-            msgbus::publish_any(raw_order_status_topic, report);
-        }
-
-        let raw_fill_topic = MessagingSwitchboard::reconciliation_raw_fill_report_topic();
-
-        for fills in mass_status.fill_reports().values() {
-            for fill in fills {
-                msgbus::publish_any(raw_fill_topic, fill);
-            }
-        }
-
-        let raw_position_topic =
-            MessagingSwitchboard::reconciliation_raw_position_status_report_topic();
-
-        for reports in mass_status.position_reports().values() {
-            for report in reports {
-                msgbus::publish_any(raw_position_topic, report);
-            }
-        }
-
-        if exec_engine
+        exec_engine
             .borrow()
-            .get_client(&mass_status.client_id)
-            .is_none()
-        {
-            log::error!(
-                "Execution client {} disappeared while publishing raw mass status reports",
-                mass_status.client_id
-            );
-            return ReconciliationResult::default();
-        }
+            .preflight_startup_execution_mass_status(&sourced)?;
 
         let venue = mass_status.venue;
         let order_count = mass_status.order_reports().len();
@@ -1064,10 +1035,10 @@ impl ExecutionManager {
             "Reconciliation complete for {venue}: reconciled={orders_reconciled}, external={external_orders_created}, open={open_orders_initialized}, fills={fills_applied}, positions={positions_created}, skipped={orders_skipped_duplicate}, filtered={orders_skipped_filtered}",
         );
 
-        ReconciliationResult {
+        Ok(ReconciliationResult {
             events,
             external_orders,
-        }
+        })
     }
 
     fn should_project_reconciliation_fill(
@@ -2772,10 +2743,9 @@ impl ExecutionManager {
         self.record_local_activity(event.client_order_id());
     }
 
-    /// Observes an incoming execution report and updates tracking state.
+    /// Validates and observes a source-bound execution report after engine dispatch.
     ///
-    /// This should be called **before** the report is dispatched to the execution
-    /// engine, so that the manager's state is current when periodic checks run.
+    /// This is called only after the execution engine has accepted and applied the report.
     ///
     /// Updates performed per report variant:
     /// - `Order`: updates reconciliation tracking based on order status
@@ -2783,7 +2753,21 @@ impl ExecutionManager {
     /// - `OrderWithFills`: updates order tracking and records position activity per fill
     /// - `Position`: records position activity
     /// - `MassStatus`: no-op (handled separately via startup reconciliation)
-    pub fn observe_execution_report(&mut self, report: &ExecutionReport) {
+    /// # Errors
+    ///
+    /// Returns an error without updating tracking state when the report source or
+    /// identity is no longer valid.
+    pub fn observe_execution_report(
+        &mut self,
+        sourced: &SourcedExecutionReport,
+        exec_engine: &ExecutionEngine,
+    ) -> anyhow::Result<()> {
+        exec_engine.preflight_execution_report(sourced)?;
+        self.observe_validated_execution_report(&sourced.report);
+        Ok(())
+    }
+
+    fn observe_validated_execution_report(&mut self, report: &ExecutionReport) {
         match report {
             ExecutionReport::Order(order_report) => {
                 self.observe_order_status_report(order_report);
@@ -5613,7 +5597,7 @@ mod tests {
             ExecutionReport::Order(Box::new(order_report))
         };
 
-        manager.observe_execution_report(&report);
+        manager.observe_validated_execution_report(&report);
 
         assert_eq!(
             manager.inflight_checks.contains_key(&client_order_id),
@@ -5725,7 +5709,8 @@ mod tests {
             None,
         );
 
-        manager.observe_execution_report(&ExecutionReport::Order(Box::new(report.clone())));
+        manager
+            .observe_validated_execution_report(&ExecutionReport::Order(Box::new(report.clone())));
         let order = cache.borrow().order_owned(&client_order_id).unwrap();
         let events =
             generate_reconciliation_order_events(&order, &report, None, UnixNanos::from(1_000));

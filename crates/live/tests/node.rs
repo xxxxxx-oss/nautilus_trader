@@ -40,6 +40,7 @@ use nautilus_common::{
     factories::{ClientConfig, DataClientFactory, ExecutionClientFactory},
     live::dst,
     messages::{
+        SourcedExecutionReport,
         execution::{
             CancelAllOrders, GenerateOrderStatusReport, GenerateOrderStatusReports,
             GeneratePositionStatusReports, QueryOrder,
@@ -2453,10 +2454,10 @@ mod serial_tests {
             source_account_id,
             source_venue,
         );
-        let raw_topic = MessagingSwitchboard::reconciliation_raw_order_status_report_topic();
+        let raw_topic = MessagingSwitchboard::reconciliation_raw_execution_mass_status_topic();
         let raw_pattern: msgbus::MStr<msgbus::Pattern> = raw_topic.into();
         let (raw_handler, raw_saver) =
-            nautilus_common::msgbus::stubs::get_any_saving_handler::<OrderStatusReport>(None);
+            nautilus_common::msgbus::stubs::get_any_saving_handler::<SourcedExecutionReport>(None);
         msgbus::subscribe_any(raw_pattern, raw_handler.clone(), None);
         let event_topic = switchboard::get_event_order_topic(StrategyId::from("EXTERNAL"));
         let (event_handler, event_saver) =
@@ -2595,14 +2596,15 @@ mod serial_tests {
         add_accepted_test_order(&node, client_order_id, venue_order_id, source_client_id);
 
         let exec_engine = node.kernel().exec_engine().clone();
-        let handler = ShareableMessageHandler::from_typed(move |_report: &OrderStatusReport| {
-            exec_engine
-                .borrow_mut()
-                .deregister_client(source_client_id)
-                .expect("source execution client should still be registered");
-        });
+        let handler =
+            ShareableMessageHandler::from_typed(move |_report: &SourcedExecutionReport| {
+                exec_engine
+                    .borrow_mut()
+                    .deregister_client(source_client_id)
+                    .expect("source execution client should still be registered");
+            });
         let raw_pattern: msgbus::MStr<msgbus::Pattern> =
-            MessagingSwitchboard::reconciliation_raw_order_status_report_topic().into();
+            MessagingSwitchboard::reconciliation_raw_execution_mass_status_topic().into();
         msgbus::subscribe_any(raw_pattern, handler.clone(), None);
 
         let result = node.start().await;
@@ -2610,9 +2612,8 @@ mod serial_tests {
         msgbus::unsubscribe_any(raw_pattern, &handler);
         let error = result.expect_err("disappearing source client should abort startup");
         assert!(
-            error
-                .to_string()
-                .contains("disappeared during startup reconciliation"),
+            format!("{error:#}")
+                .contains("Execution report source SOURCE-CLIENT is not registered"),
             "unexpected error: {error:#}"
         );
         assert_eq!(node.state(), NodeState::Stopped);

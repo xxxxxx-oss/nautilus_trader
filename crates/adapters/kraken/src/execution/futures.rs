@@ -115,6 +115,7 @@ impl KrakenFuturesExecutionClient {
         let emitter = ExecutionEventEmitter::new(
             clock,
             core.trader_id,
+            core.client_id,
             core.account_id,
             AccountType::Margin,
             None,

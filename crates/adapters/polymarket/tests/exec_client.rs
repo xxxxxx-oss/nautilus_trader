@@ -46,7 +46,7 @@ use nautilus_common::{
     enums::LogLevel,
     live::runner::{replace_system_event_sender, set_exec_event_sender},
     messages::{
-        ExecutionEvent, ExecutionReport, SystemEvent,
+        ExecutionEvent, ExecutionReport, SourcedExecutionReport, SystemEvent,
         execution::{
             BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
             GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
@@ -3619,7 +3619,7 @@ async fn test_submit_order_version_mismatch_emits_actionable_rejection() {
 
 fn assert_order_status_report(event: ExecutionEvent, expected_status: OrderStatus) {
     match event {
-        ExecutionEvent::Report(report) => match report {
+        ExecutionEvent::Report(SourcedExecutionReport { report, .. }) => match report {
             ExecutionReport::Order(r) => {
                 assert_eq!(
                     r.order_status, expected_status,
@@ -3842,7 +3842,10 @@ async fn test_fok_deferred_check_filled_emits_report_for_reconciliation() {
         .unwrap();
 
     match event {
-        ExecutionEvent::Report(ExecutionReport::Order(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Order(report),
+            ..
+        }) => {
             assert_eq!(report.order_status, OrderStatus::Filled);
             assert_eq!(report.filled_qty, Quantity::zero(0));
         }
@@ -8610,7 +8613,10 @@ async fn test_order_queries_use_registered_identity_after_delayed_submit() {
     client.query_order(query).unwrap();
 
     match recv_execution_event(&mut rx).await {
-        ExecutionEvent::Report(ExecutionReport::Order(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Order(report),
+            ..
+        }) => {
             assert_eq!(report.client_order_id, Some(order.client_order_id()));
             assert_eq!(
                 report.venue_order_id,
@@ -8698,7 +8704,10 @@ async fn test_query_order_excludes_unconfirmed_matched_quantity() {
         .unwrap();
 
     match event {
-        ExecutionEvent::Report(ExecutionReport::Order(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Order(report),
+            ..
+        }) => {
             assert_eq!(report.order_status, OrderStatus::Filled);
             assert_eq!(report.filled_qty, Quantity::zero(4));
         }

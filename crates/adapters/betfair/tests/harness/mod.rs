@@ -36,7 +36,7 @@ use nautilus_common::{
     clock::{Clock, TestClock},
     live::runner::{replace_data_event_sender, replace_exec_event_sender},
     messages::{
-        ExecutionEvent,
+        ExecutionEvent, ExecutionReport, SourcedExecutionReport,
         execution::{TradingCommand, modify::ModifyOrder, submit::SubmitOrder},
     },
     msgbus::{self, MessageBus, MessagingSwitchboard},
@@ -377,9 +377,14 @@ impl Harness {
             .await
             .expect("generate_mass_status failed")
             .expect("mass status was None");
+        let sourced = SourcedExecutionReport::new(
+            client_id,
+            ExecutionReport::MassStatus(Box::new(mass_status.clone())),
+        );
         self.exec_engine
             .borrow_mut()
-            .reconcile_execution_mass_status(&mass_status);
+            .reconcile_execution_report(&sourced)
+            .expect("reconcile_execution_report failed");
         mass_status
     }
 }

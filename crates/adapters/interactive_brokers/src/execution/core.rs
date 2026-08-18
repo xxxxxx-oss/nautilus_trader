@@ -55,7 +55,7 @@ use nautilus_common::{
     factories::OrderEventFactory,
     live::{get_runtime, runner::get_exec_event_sender},
     messages::{
-        ExecutionEvent,
+        ExecutionEvent, SourcedExecutionReport,
         execution::{
             BatchCancelOrders, CancelAllOrders, CancelOrder, ExecutionReport, GenerateFillReports,
             GenerateFillReportsBuilder, GenerateOrderStatusReport, GenerateOrderStatusReports,
@@ -750,6 +750,7 @@ impl ExecutionClient for InteractiveBrokersExecutionClient {
 
             if let Err(e) = crate::execution::account::subscribe_positions(
                 &client_for_positions,
+                self.core.client_id,
                 self.core.account_id,
                 position_tracker_clone,
                 instrument_provider_clone,
@@ -1382,6 +1383,7 @@ impl ExecutionClient for InteractiveBrokersExecutionClient {
         let client_clone = client.as_arc().clone();
         let instrument_id_map = Arc::clone(&self.instrument_id_map);
         let instrument_provider = Arc::clone(&self.instrument_provider);
+        let client_id = self.core.client_id;
         let account_id = self.core.account_id;
         let exec_sender = get_exec_event_sender();
         let ts_init = get_atomic_clock_realtime().get_time_ns();
@@ -1461,9 +1463,10 @@ impl ExecutionClient for InteractiveBrokersExecutionClient {
                     };
 
                     if exec_sender
-                        .send(ExecutionEvent::Report(ExecutionReport::Order(Box::new(
-                            report,
-                        ))))
+                        .send(ExecutionEvent::Report(SourcedExecutionReport::new(
+                            client_id,
+                            ExecutionReport::Order(Box::new(report)),
+                        )))
                         .is_err()
                     {
                         tracing::error!("query_order: failed to send order status report");

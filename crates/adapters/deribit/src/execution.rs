@@ -125,6 +125,7 @@ impl DeribitExecutionClient {
         let emitter = ExecutionEventEmitter::new(
             clock,
             core.trader_id,
+            core.client_id,
             core.account_id,
             AccountType::Margin,
             None,
@@ -1113,7 +1114,9 @@ fn reject_modify_command(
 
 #[cfg(test)]
 mod tests {
-    use nautilus_common::messages::{ExecutionEvent, execution::ExecutionReport};
+    use nautilus_common::messages::{
+        ExecutionEvent, SourcedExecutionReport, execution::ExecutionReport,
+    };
     use nautilus_core::UUID4;
     use nautilus_model::{
         enums::LiquiditySide,
@@ -1134,6 +1137,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             get_atomic_clock_realtime(),
             trader_id,
+            ClientId::from("DERIBIT"),
             account_id,
             AccountType::Margin,
             None,
@@ -1209,7 +1213,10 @@ mod tests {
 
         assert!(matches!(
             rx.try_recv().unwrap(),
-            ExecutionEvent::Report(ExecutionReport::Fill(_))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(_),
+                ..
+            })
         ));
         assert!(rx.try_recv().is_err());
     }

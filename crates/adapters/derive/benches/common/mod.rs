@@ -33,7 +33,7 @@ use nautilus_core::{AtomicTime, time::get_atomic_clock_realtime};
 use nautilus_live::ExecutionEventEmitter;
 use nautilus_model::{
     enums::AccountType,
-    identifiers::{AccountId, TraderId},
+    identifiers::{AccountId, ClientId, TraderId},
     types::Currency,
 };
 
@@ -83,6 +83,7 @@ pub(crate) fn bench_emitter() -> (
     let mut emitter = ExecutionEventEmitter::new(
         clock(),
         trader_id(),
+        ClientId::from("DERIVE"),
         account_id(),
         AccountType::Margin,
         Some(Currency::from("USDC")),

@@ -40,7 +40,7 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::runner::set_exec_event_sender,
     messages::{
-        ExecutionEvent,
+        ExecutionEvent, SourcedExecutionReport,
         execution::{
             BatchCancelOrders, CancelOrder, ExecutionReport as CommonExecutionReport, ModifyOrder,
             QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList,
@@ -128,6 +128,7 @@ fn test_emitter() -> (
     let mut emitter = ExecutionEventEmitter::new(
         clock,
         TraderId::from("TESTER-001"),
+        *OKX_CLIENT_ID,
         AccountId::from("OKX-001"),
         AccountType::Margin,
         None,
@@ -324,7 +325,11 @@ async fn recv_query_order_report(
                     panic!("event stream closed before query order report");
                 };
 
-                if let ExecutionEvent::Report(CommonExecutionReport::Order(report)) = event {
+                if let ExecutionEvent::Report(SourcedExecutionReport {
+                    report: CommonExecutionReport::Order(report),
+                    ..
+                }) = event
+                {
                     assert_eq!(report.client_order_id, expected_client_order_id);
                     return *report;
                 }
@@ -1632,7 +1637,10 @@ fn test_dispatch_untracked_algo_child_fill_with_empty_client_order_id_as_report(
     let events = drain_events(&mut rx);
     assert_eq!(events.len(), 1);
     match &events[0] {
-        ExecutionEvent::Report(CommonExecutionReport::Fill(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: CommonExecutionReport::Fill(report),
+            ..
+        }) => {
             assert_eq!(report.account_id, AccountId::from("OKX-001"));
             assert_eq!(report.instrument_id, instrument_id);
             assert_eq!(report.client_order_id, Some(client_order_id));
@@ -1739,7 +1747,10 @@ fn test_dispatch_venue_initiated_order_fill_as_report(#[case] case: VenueFillCas
     let events = drain_events(&mut rx);
     assert_eq!(events.len(), 1);
     match &events[0] {
-        ExecutionEvent::Report(CommonExecutionReport::Fill(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: CommonExecutionReport::Fill(report),
+            ..
+        }) => {
             // Venue-initiated flow (liquidation or ADL): no client order ID,
             // surfaced as a fill report
             assert_eq!(report.account_id, AccountId::from("OKX-001"));
@@ -1801,7 +1812,10 @@ fn test_dispatch_positions_channel_emits_position_report() {
     let events = drain_events(&mut rx);
     assert_eq!(events.len(), 1);
     match &events[0] {
-        ExecutionEvent::Report(CommonExecutionReport::Position(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: CommonExecutionReport::Position(report),
+            ..
+        }) => {
             assert_eq!(report.account_id, AccountId::from("OKX-001"));
             assert_eq!(report.instrument_id, instrument_id);
             assert_eq!(report.position_side, PositionSideSpecified::Long);
@@ -1944,7 +1958,10 @@ fn test_dispatch_tracked_post_only_cancel_from_fixture(
     let untracked_events = drain_events(&mut untracked_rx);
     assert_eq!(untracked_events.len(), 1);
     match &untracked_events[0] {
-        ExecutionEvent::Report(CommonExecutionReport::Order(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: CommonExecutionReport::Order(report),
+            ..
+        }) => {
             assert_eq!(report.account_id, AccountId::from("OKX-001"));
             assert_eq!(report.instrument_id, instrument_id);
             assert_eq!(report.client_order_id, Some(client_order_id));
@@ -2198,7 +2215,10 @@ fn test_dispatch_untracked_spread_order_emits_status_report() {
     let events = drain_events(&mut rx);
     assert_eq!(events.len(), 1);
     match &events[0] {
-        ExecutionEvent::Report(CommonExecutionReport::Order(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: CommonExecutionReport::Order(report),
+            ..
+        }) => {
             assert_eq!(report.client_order_id, Some(cid));
             assert_eq!(report.venue_order_id, VenueOrderId::new(venue_order_id));
             assert_eq!(
@@ -3442,7 +3462,10 @@ async fn test_query_order_routes_cached_regular_pretrigger_algo_and_unknown_orde
         .filter(|event| {
             matches!(
                 event,
-                ExecutionEvent::Report(CommonExecutionReport::Order(_))
+                ExecutionEvent::Report(SourcedExecutionReport {
+                    report: CommonExecutionReport::Order(_),
+                    ..
+                })
             )
         })
         .collect();

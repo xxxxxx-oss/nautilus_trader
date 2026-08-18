@@ -117,8 +117,14 @@ impl AxExecutionClient {
         let clock = get_atomic_clock_realtime();
         let trader_id = core.trader_id;
         let account_id = core.account_id;
-        let emitter =
-            ExecutionEventEmitter::new(clock, trader_id, account_id, AccountType::Margin, None);
+        let emitter = ExecutionEventEmitter::new(
+            clock,
+            trader_id,
+            core.client_id,
+            account_id,
+            AccountType::Margin,
+            None,
+        );
         let mut ws_url = config.ws_private_url();
         if config.cancel_on_disconnect {
             let separator = if ws_url.contains('?') { "&" } else { "?" };
@@ -2305,6 +2311,7 @@ mod tests {
         let mut emitter = ExecutionEventEmitter::new(
             clock,
             TraderId::from("TESTER-001"),
+            ClientId::from("AX"),
             account_id,
             AccountType::Margin,
             None,

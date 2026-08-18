@@ -64,7 +64,7 @@ use nautilus_common::{
     clients::ExecutionClient,
     live::runner::{replace_exec_event_sender, replace_system_event_sender},
     messages::{
-        ExecutionEvent, ExecutionReport, SystemEvent,
+        ExecutionEvent, ExecutionReport, SourcedExecutionReport, SystemEvent,
         execution::{
             BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
             GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
@@ -2405,12 +2405,21 @@ async fn test_acknowledged_create_allows_delayed_active_order() {
     }));
 
     let report = next_event_matching(&mut rx, Duration::from_secs(7), |event| {
-        matches!(event, ExecutionEvent::Report(ExecutionReport::Order(_)))
+        matches!(
+            event,
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Order(_),
+                ..
+            })
+        )
     })
     .await
     .expect("delayed order status report");
     match report {
-        ExecutionEvent::Report(ExecutionReport::Order(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Order(report),
+            ..
+        }) => {
             assert_eq!(report.client_order_id, Some(order.client_order_id()));
             assert_eq!(report.venue_order_id, VenueOrderId::from("281476929510500"));
             assert_eq!(report.order_status, OrderStatus::Accepted);
@@ -4048,7 +4057,10 @@ async fn test_generate_bounded_mass_status_rejects_skipped_position_row() {
     let unexpected_position = next_event_matching(&mut rx, Duration::from_millis(250), |event| {
         matches!(
             event,
-            ExecutionEvent::Report(ExecutionReport::Position(report))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Position(report),
+                ..
+            })
                 if report.instrument_id == eth_perp_id()
         )
     })
@@ -4318,13 +4330,22 @@ async fn test_generate_mass_status_excludes_old_fill_without_poisoning_replay() 
         "trades": {"0": [trade]},
     }));
     let replay = next_event_matching(&mut rx, Duration::from_secs(2), |event| {
-        matches!(event, ExecutionEvent::Report(ExecutionReport::Fill(_)))
+        matches!(
+            event,
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(_),
+                ..
+            })
+        )
     })
     .await
     .expect("live replay of lookback-excluded fill");
 
     match replay {
-        ExecutionEvent::Report(ExecutionReport::Fill(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Fill(report),
+            ..
+        }) => {
             assert_eq!(report.trade_id.to_string(), "19209006906");
         }
         other => panic!("expected FillReport, was {other:?}"),
@@ -4647,7 +4668,13 @@ async fn test_generate_fill_reports_skips_trade_seen_on_websocket() {
 
     state.push_frame(&trade_frame);
     next_event_matching(&mut rx, Duration::from_secs(2), |e| {
-        matches!(e, ExecutionEvent::Report(ExecutionReport::Fill(_)))
+        matches!(
+            e,
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(_),
+                ..
+            })
+        )
     })
     .await
     .expect("first fill report");
@@ -4835,13 +4862,22 @@ async fn test_generate_order_status_reports_excludes_order_before_identity_resto
         "trades": {"0": [replay]},
     }));
     let report = next_event_matching(&mut rx, Duration::from_secs(2), |event| {
-        matches!(event, ExecutionEvent::Report(ExecutionReport::Fill(_)))
+        matches!(
+            event,
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Fill(_),
+                ..
+            })
+        )
     })
     .await
     .expect("live fill report");
 
     match report {
-        ExecutionEvent::Report(ExecutionReport::Fill(report)) => {
+        ExecutionEvent::Report(SourcedExecutionReport {
+            report: ExecutionReport::Fill(report),
+            ..
+        }) => {
             assert_eq!(
                 report.client_order_id,
                 Some(ClientOrderId::new(venue_order_id.as_str())),
@@ -5192,7 +5228,10 @@ async fn test_account_all_positions_empty_update_retains_cached_position(
     next_event_matching(&mut rx, Duration::from_secs(2), |e| {
         matches!(
             e,
-            ExecutionEvent::Report(ExecutionReport::Position(report))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Position(report),
+                ..
+            })
                 if report.instrument_id == eth_perp_id()
                     && report.position_side == expected_side
                     && report.quantity == Quantity::from("1.5000")
@@ -5213,7 +5252,10 @@ async fn test_account_all_positions_empty_update_retains_cached_position(
     let unexpected_close = next_event_matching(&mut rx, Duration::from_millis(250), |e| {
         matches!(
             e,
-            ExecutionEvent::Report(ExecutionReport::Position(report))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Position(report),
+                ..
+            })
                 if report.instrument_id == eth_perp_id()
                     && report.position_side == PositionSideSpecified::Flat
                     && report.quantity.is_zero()
@@ -5313,7 +5355,10 @@ async fn test_account_all_positions_flat_snapshot_clears_cache_and_emits_flat_re
     let flat_report = next_event_matching(&mut rx, Duration::from_secs(2), |e| {
         matches!(
             e,
-            ExecutionEvent::Report(ExecutionReport::Position(report))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Position(report),
+                ..
+            })
                 if report.instrument_id == eth_perp_id()
                     && report.position_side == PositionSideSpecified::Flat
                     && report.quantity.is_zero()
@@ -5322,7 +5367,11 @@ async fn test_account_all_positions_flat_snapshot_clears_cache_and_emits_flat_re
     .await
     .expect("flat position report");
 
-    let ExecutionEvent::Report(ExecutionReport::Position(flat_report)) = flat_report else {
+    let ExecutionEvent::Report(SourcedExecutionReport {
+        report: ExecutionReport::Position(flat_report),
+        ..
+    }) = flat_report
+    else {
         unreachable!("predicate only accepts position reports");
     };
     assert_eq!(flat_report.account_id, account_id());
@@ -5338,7 +5387,10 @@ async fn test_account_all_positions_flat_snapshot_clears_cache_and_emits_flat_re
     let duplicate_flat = next_event_matching(&mut rx, Duration::from_millis(250), |e| {
         matches!(
             e,
-            ExecutionEvent::Report(ExecutionReport::Position(report))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Position(report),
+                ..
+            })
                 if report.instrument_id == eth_perp_id()
                     && report.position_side == PositionSideSpecified::Flat
                     && report.quantity.is_zero()
@@ -5383,7 +5435,10 @@ async fn test_account_all_positions_invalid_known_market_does_not_flatten_cached
     next_event_matching(&mut rx, Duration::from_secs(2), |e| {
         matches!(
             e,
-            ExecutionEvent::Report(ExecutionReport::Position(report))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Position(report),
+                ..
+            })
                 if report.instrument_id == eth_perp_id()
                     && report.quantity == Quantity::from("1.5000")
         )
@@ -5398,7 +5453,10 @@ async fn test_account_all_positions_invalid_known_market_does_not_flatten_cached
     let unexpected_flat = next_event_matching(&mut rx, Duration::from_millis(250), |e| {
         matches!(
             e,
-            ExecutionEvent::Report(ExecutionReport::Position(report))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Position(report),
+                ..
+            })
                 if report.instrument_id == eth_perp_id()
                     && report.position_side == PositionSideSpecified::Flat
                     && report.quantity.is_zero()
@@ -5606,7 +5664,10 @@ async fn test_account_all_positions_empty_snapshot_after_reconnect_flattens_prio
     let flat_report = next_event_matching(&mut rx, Duration::from_secs(2), |e| {
         matches!(
             e,
-            ExecutionEvent::Report(ExecutionReport::Position(report))
+            ExecutionEvent::Report(SourcedExecutionReport {
+                report: ExecutionReport::Position(report),
+                ..
+            })
                 if report.instrument_id == eth_perp_id()
                     && report.position_side == PositionSideSpecified::Flat
                     && report.quantity.is_zero()
@@ -5615,7 +5676,11 @@ async fn test_account_all_positions_empty_snapshot_after_reconnect_flattens_prio
     .await
     .expect("flat position report after reconnect");
 
-    let ExecutionEvent::Report(ExecutionReport::Position(flat_report)) = flat_report else {
+    let ExecutionEvent::Report(SourcedExecutionReport {
+        report: ExecutionReport::Position(flat_report),
+        ..
+    }) = flat_report
+    else {
         unreachable!("predicate only accepts position reports");
     };
     assert_eq!(flat_report.instrument_id, eth_perp_id());
