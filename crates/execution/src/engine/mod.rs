@@ -1190,7 +1190,6 @@ impl ExecutionEngine {
             ExecutionReport::Order(report) => {
                 self.preflight_order_reference(
                     client,
-                    sourced.client_id,
                     report.account_id,
                     report.instrument_id,
                     report.client_order_id,
@@ -1206,7 +1205,6 @@ impl ExecutionEngine {
                 );
                 self.preflight_order_reference(
                     client,
-                    sourced.client_id,
                     report.account_id,
                     report.instrument_id,
                     report.client_order_id,
@@ -1217,7 +1215,6 @@ impl ExecutionEngine {
             ExecutionReport::OrderWithFills(report, fills) => {
                 let order = self.preflight_order_reference(
                     client,
-                    sourced.client_id,
                     report.account_id,
                     report.instrument_id,
                     report.client_order_id,
@@ -1228,7 +1225,6 @@ impl ExecutionEngine {
                 for fill in fills {
                     self.preflight_bundled_fill(
                         client,
-                        sourced.client_id,
                         report,
                         fill,
                         order.as_ref(),
@@ -1269,7 +1265,6 @@ impl ExecutionEngine {
                 for report in mass_status.order_reports().values() {
                     let order = self.preflight_order_reference(
                         client,
-                        sourced.client_id,
                         report.account_id,
                         report.instrument_id,
                         report.client_order_id,
@@ -1305,7 +1300,6 @@ impl ExecutionEngine {
                     for fill in fills {
                         self.preflight_bundled_fill(
                             client,
-                            sourced.client_id,
                             report,
                             fill,
                             order.as_ref(),
@@ -1323,7 +1317,6 @@ impl ExecutionEngine {
                     if let Some(first_fill) = reports.first() {
                         let order = self.preflight_order_reference(
                             client,
-                            sourced.client_id,
                             first_fill.account_id,
                             first_fill.instrument_id,
                             first_fill.client_order_id,
@@ -1350,12 +1343,7 @@ impl ExecutionEngine {
                             }
                         }
                     }
-                    self.preflight_orphan_fill_reports(
-                        client,
-                        sourced.client_id,
-                        &reports,
-                        enforce_cached_origin,
-                    )?;
+                    self.preflight_orphan_fill_reports(client, &reports, enforce_cached_origin)?;
                 }
 
                 for reports in mass_status.position_reports().values() {
@@ -1402,7 +1390,6 @@ impl ExecutionEngine {
             };
             let order = self.preflight_order_reference(
                 client,
-                source_client_id,
                 first_fill.account_id,
                 first_fill.instrument_id,
                 first_fill.client_order_id,
@@ -1426,7 +1413,6 @@ impl ExecutionEngine {
         for report in mass_status.order_reports().values() {
             let order = self.preflight_order_reference(
                 client,
-                source_client_id,
                 report.account_id,
                 report.instrument_id,
                 report.client_order_id,
@@ -1476,7 +1462,6 @@ impl ExecutionEngine {
     fn preflight_order_reference(
         &self,
         client: &ExecutionClientAdapter,
-        source_client_id: ClientId,
         account_id: AccountId,
         instrument_id: InstrumentId,
         direct_client_order_id: Option<ClientOrderId>,
@@ -1520,11 +1505,13 @@ impl ExecutionEngine {
         if let Some(order) = &order {
             let client_order_id = order.client_order_id();
             let cached_source = cache.client_id(&client_order_id).copied();
+
             if enforce_cached_origin {
                 anyhow::ensure!(
-                    cached_source == Some(source_client_id),
+                    cached_source == Some(client.client_id),
                     "Cached order {client_order_id} origin {cached_source:?} did not match report \
-                     source {source_client_id}"
+                     source {}",
+                    client.client_id,
                 );
             }
             anyhow::ensure!(
@@ -1558,7 +1545,6 @@ impl ExecutionEngine {
     fn preflight_bundled_fill(
         &self,
         client: &ExecutionClientAdapter,
-        source_client_id: ClientId,
         order_report: &OrderStatusReport,
         fill: &FillReport,
         order: Option<&OrderAny>,
@@ -1597,7 +1583,6 @@ impl ExecutionEngine {
 
         let fill_order = self.preflight_order_reference(
             client,
-            source_client_id,
             fill.account_id,
             fill.instrument_id,
             fill.client_order_id,
@@ -1617,7 +1602,6 @@ impl ExecutionEngine {
     fn preflight_orphan_fill_reports(
         &self,
         client: &ExecutionClientAdapter,
-        source_client_id: ClientId,
         fills: &[FillReport],
         enforce_cached_origin: bool,
     ) -> anyhow::Result<()> {
@@ -1627,7 +1611,6 @@ impl ExecutionEngine {
 
         let mut order = self.preflight_order_reference(
             client,
-            source_client_id,
             first_fill.account_id,
             first_fill.instrument_id,
             first_fill.client_order_id,
@@ -1668,7 +1651,6 @@ impl ExecutionEngine {
             );
             let resolved = self.preflight_order_reference(
                 client,
-                source_client_id,
                 fill.account_id,
                 fill.instrument_id,
                 fill.client_order_id,
